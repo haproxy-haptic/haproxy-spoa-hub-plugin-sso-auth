@@ -3,7 +3,7 @@ name = "haproxy-spoa-hub-plugin-sso-auth"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.86"
-license = "MIT"
+license = "Apache-2.0"
 description = "HAProxy SPOA hub plugin for SSO authentication via OIDC and SAML"
 
 [lib]
