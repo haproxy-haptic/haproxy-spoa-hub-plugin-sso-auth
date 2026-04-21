@@ -1,0 +1,7 @@
+FROM registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub:latest
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxmlsec1-openssl libxml2 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY plugin.so /etc/haproxy-spoa-hub/plugins/libsso_auth_plugin.so

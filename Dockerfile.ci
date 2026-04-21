@@ -1,0 +1,51 @@
+# Stage 1: Fetch and vendor dependencies on the build host (no QEMU).
+# This avoids the 32-bit QEMU file-size limitation when accessing git
+# repos on armv7.
+FROM --platform=$BUILDPLATFORM rust:1.86-bookworm AS fetcher
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
+
+# Vendor all dependencies (including git deps) into a local directory
+# so the builder stage never needs to access cargo's git db.
+RUN cargo vendor vendor/ > /dev/null 2>&1 \
+    && mkdir -p .cargo \
+    && cat > .cargo/config.toml <<'EOF'
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/njaremko/samael.git"]
+git = "https://github.com/njaremko/samael.git"
+replace-with = "vendored-sources"
+
+[source."git+https://gitlab.com/haproxy-haptic/haproxy-spoa-hub.git"]
+git = "https://gitlab.com/haproxy-haptic/haproxy-spoa-hub.git"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor/"
+EOF
+
+# Stage 2: Build natively on the target platform (may use QEMU).
+FROM rust:1.86-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxml2-dev libxmlsec1-dev libxmlsec1-openssl \
+    pkg-config libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
+
+# Use vendored sources — no network or git access needed.
+COPY --from=fetcher /build/vendor vendor/
+COPY --from=fetcher /build/.cargo .cargo/
+
+RUN cargo build --release
+
+FROM scratch
+COPY --from=builder /build/target/release/libhaproxy_spoa_hub_plugin_sso_auth.so /

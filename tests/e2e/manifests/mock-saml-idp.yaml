@@ -1,0 +1,15 @@
+# Mock SAML IdP placeholder.
+# SAML e2e tests require a mock IdP that auto-grants and returns
+# signed SAMLResponse assertions. Options:
+#   - Build a minimal Rust responder using samael (preferred)
+#   - Use an existing Docker image if available
+#
+# For the initial implementation, SAML e2e tests are deferred until
+# a suitable mock IdP is available. OIDC e2e tests cover the core
+# plugin flow (cookie handling, SPOE variable mapping, redirect logic).
+#
+# To add SAML e2e tests:
+# 1. Build or find a mock SAML IdP container image
+# 2. Add a Deployment + Service here
+# 3. Add SAML provider entries to the map files in configmaps.yaml
+# 4. Add SAML test scenarios to run.sh

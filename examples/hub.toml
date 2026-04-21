@@ -1,0 +1,26 @@
+plugin_dir = "/opt/spoa-plugins"
+default_timeout_ms = 100
+log_level = "info"
+
+[[listeners]]
+type = "unix"
+address = "/var/run/haproxy-spoa-hub.sock"
+
+[[plugins]]
+name = "sso_auth"
+library = "libsso_auth_plugin.so"
+messages = ["check-sso-auth"]
+timeout_ms = 10000
+
+[plugins.params]
+cookie_secret_1 = "your-secret-at-least-16-chars"
+cookie_domain = "example.com"
+# cookie_secret_2 = "rotation-secret-at-least-16-chars"
+# current_cookie_secret = 1
+# cookie_lifetime_secs = 36000
+# default_timeout_ms = 5000
+# fail_open = false
+# max_providers = 256
+# clock_skew_secs = 60
+# discovery_ttl_secs = 3600
+# jwks_ttl_secs = 3600

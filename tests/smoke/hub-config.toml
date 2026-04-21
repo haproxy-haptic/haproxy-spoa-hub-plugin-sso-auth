@@ -1,0 +1,20 @@
+plugin_dir = "/etc/haproxy-spoa-hub/plugins"
+default_timeout_ms = 100
+log_level = "debug"
+
+[[listeners]]
+type = "unix"
+address = "/var/run/spoe/hub.sock"
+
+[[plugins]]
+name = "sso_auth"
+library = "libsso_auth_plugin.so"
+messages = ["check-sso-auth"]
+timeout_ms = 10000
+
+[plugins.params]
+cookie_secret_1 = "e2e-test-secret-at-least-16-chars"
+cookie_domain = "localhost"
+cookie_secure = false
+default_timeout_ms = 5000
+max_providers = 16

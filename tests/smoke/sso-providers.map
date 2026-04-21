@@ -1,0 +1,1 @@
+mock-oidc {"protocol":"oidc","client_id":"test-client","client_secret":"test-secret","discovery_url":"http://smoke-mock-oidc:8080/default/.well-known/openid-configuration","redirect_uri":"__REDIRECT_URI__","extract_claims":"email,name,groups"}

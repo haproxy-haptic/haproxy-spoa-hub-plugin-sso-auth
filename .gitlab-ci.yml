@@ -1,0 +1,286 @@
+stages:
+  - check
+  - build
+  - smoke
+  - release
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+variables:
+  RUST_VERSION: "1.86"
+  CARGO_INCREMENTAL: "0"
+  GLIBC_VERSION: "2.36"
+  LIB_NAME: "libhaproxy_spoa_hub_plugin_sso_auth"
+  # SAML C dependencies needed for samael/xmlsec
+  SAML_DEPS: "libxml2-dev libxmlsec1-dev libxmlsec1-openssl pkg-config libclang-dev"
+
+.rules-code:
+  rules:
+    - changes:
+        - "**/*.rs"
+        - Cargo.toml
+        - Cargo.lock
+        - Dockerfile.ci
+        - "ci/**/*"
+        - "tests/**/*"
+        - rustfmt.toml
+        - .gitlab-ci.yml
+
+.install-saml-deps:
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq ${SAML_DEPS} >/dev/null
+
+# =============================================================================
+# Check Stage
+# =============================================================================
+
+fmt:
+  stage: check
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-small-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - !reference [.rules-code, rules]
+  interruptible: true
+  before_script:
+    - rustup component add rustfmt
+  script:
+    - cargo fmt -- --check
+
+clippy:
+  stage: check
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-large-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - !reference [.rules-code, rules]
+  interruptible: true
+  before_script:
+    - !reference [.install-saml-deps, before_script]
+    - rustup component add clippy
+  script:
+    - cargo clippy --workspace -- -D warnings -A deprecated -A clippy::type-complexity
+
+test:
+  stage: check
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-large-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  interruptible: true
+  before_script:
+    - !reference [.install-saml-deps, before_script]
+  script:
+    - cargo test --workspace
+
+e2e:
+  stage: check
+  image: docker:latest
+  tags:
+    - saas-linux-large-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  interruptible: true
+  timeout: 20m
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apk add --no-cache bash curl git
+    - curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+    - chmod +x /usr/local/bin/kind
+    - curl -Lo /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x /usr/local/bin/kubectl
+  script:
+    - tests/e2e/run.sh
+
+# =============================================================================
+# Build Stage — multi-arch
+#
+# amd64/arm64: Built natively on saas-linux-large-${ARCH} hosted runners.
+# armv7: Cross-compiled inside a Bookworm-based Docker container.
+# QEMU armv7 emulation causes libclang to produce incorrect struct
+# layouts, so armv7 uses cross-compilation instead.
+# =============================================================================
+
+build:
+  stage: build
+  image: docker:latest
+  tags:
+    - saas-linux-large-${ARCH}
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  interruptible: true
+  timeout: 20m
+  services:
+    # --mtu=1400 avoids DinD networking issues on saas-linux-*-arm64
+    # (GCP host MTU mismatch); harmless on amd64.
+    - name: docker:dind
+      command: ["--mtu=1400"]
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  parallel:
+    matrix:
+      - ARCH: amd64
+        PLATFORM: linux/amd64
+      - ARCH: arm64
+        PLATFORM: linux/arm64
+  before_script:
+    - docker buildx create --use --name multiarch --driver docker-container
+  script:
+    - |
+      docker buildx build \
+        --platform "${PLATFORM}" \
+        --file Dockerfile.ci \
+        --output "type=local,dest=./output" \
+        .
+    - |
+      mkdir -p artifacts
+      cp "output/${LIB_NAME}.so" \
+         "artifacts/${LIB_NAME}-${ARCH}-glibc${GLIBC_VERSION}.so"
+      ls -lh "artifacts/${LIB_NAME}-${ARCH}-glibc${GLIBC_VERSION}.so"
+  artifacts:
+    paths:
+      - artifacts/
+    expire_in: 1 week
+
+build-armv7:
+  stage: build
+  image: docker:latest
+  tags:
+    - saas-linux-large-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  interruptible: true
+  timeout: 30m
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  script:
+    - |
+      docker build \
+        --file ci/Dockerfile.armv7 \
+        --output "type=local,dest=./output" \
+        .
+    - |
+      mkdir -p artifacts
+      cp "output/${LIB_NAME}.so" \
+         "artifacts/${LIB_NAME}-armv7-glibc${GLIBC_VERSION}.so"
+      ls -lh "artifacts/${LIB_NAME}-armv7-glibc${GLIBC_VERSION}.so"
+  artifacts:
+    paths:
+      - artifacts/
+    expire_in: 1 week
+
+# =============================================================================
+# Smoke Stage — verify ARM .so files load and work under QEMU
+# =============================================================================
+
+.smoke-base:
+  stage: smoke
+  image: docker:latest
+  tags:
+    - saas-linux-large-amd64
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  interruptible: true
+  timeout: 15m
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apk add --no-cache bash curl
+    - docker run --rm --privileged tonistiigi/binfmt --install all
+
+smoke-arm64:
+  extends: .smoke-base
+  needs:
+    - job: "build: [arm64, linux/arm64]"
+      artifacts: true
+  script:
+    - tests/smoke/run.sh --arch arm64 --mode oidc-flow
+
+smoke-armv7:
+  extends: .smoke-base
+  needs:
+    - job: build-armv7
+      artifacts: true
+  script:
+    - tests/smoke/run.sh --arch armv7 --mode load-only
+
+# =============================================================================
+# Release Stage (triggered by v* tags)
+# =============================================================================
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  tags:
+    - saas-linux-small-amd64
+  needs:
+    - build
+    - build-armv7
+    - smoke-arm64
+    - smoke-armv7
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v.*/
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - |
+      VERSION="${CI_COMMIT_TAG#v}"
+      awk -v ver="${VERSION}" '
+        /^## \[/ { if (found) exit; if (index($0, "[" ver "]")) found=1 }
+        found { print }
+      ' CHANGELOG.md > /tmp/release-notes.md
+      if [ ! -s /tmp/release-notes.md ]; then
+        echo "Release ${CI_COMMIT_TAG}" > /tmp/release-notes.md
+      fi
+      cat /tmp/release-notes.md
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "$CI_COMMIT_TAG"
+    description: /tmp/release-notes.md
+    assets:
+      links:
+        - name: "${LIB_NAME}-amd64-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/${LIB_NAME}-amd64-glibc${GLIBC_VERSION}.so?job=build%3A+%5Bamd64%5D"
+          link_type: package
+        - name: "${LIB_NAME}-arm64-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/${LIB_NAME}-arm64-glibc${GLIBC_VERSION}.so?job=build%3A+%5Barm64%5D"
+          link_type: package
+        - name: "${LIB_NAME}-armv7-glibc${GLIBC_VERSION}.so"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/artifacts/${LIB_NAME}-armv7-glibc${GLIBC_VERSION}.so?job=build-armv7"
+          link_type: package

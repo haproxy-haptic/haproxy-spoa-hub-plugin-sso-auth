@@ -1,0 +1,150 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-config
+  namespace: e2e-sso-auth
+data:
+  haproxy.cfg: |
+    global
+        log stdout format raw local0 info
+
+    defaults
+        mode http
+        timeout connect 5s
+        timeout client  30s
+        timeout server  30s
+        log global
+
+    frontend http
+        bind *:8080
+        filter spoe engine sso-auth config /etc/haproxy/spoe-sso-auth.conf
+        option http-buffer-request
+        tcp-request inspect-delay 5s
+
+        # Map routes to providers
+        http-request set-var(txn.sso_provider) str(mock-oidc) if { path_beg /oidc-app }
+
+        # Load provider config from single map file
+        http-request set-var(txn.sso_provider_config) var(txn.sso_provider),map_str(/etc/haproxy/maps/sso-providers.map)
+
+        # Detect logout
+        http-request set-var(txn.is_logout) str(true) if { path_end /logout }
+
+        # Trigger SPOE
+        http-request send-spoe-group sso-auth check-sso-auth-group if { var(txn.sso_provider) -m found }
+
+        # Handle auth decisions
+        http-request redirect location %[var(txn.spoe.sso_auth.redirect_url)] if { var(txn.spoe.sso_auth.action) -m str redirect }
+        http-request deny deny_status 401 if { var(txn.spoe.sso_auth.action) -m str deny }
+
+        # Set cookies (using convenience headers from the plugin)
+        http-response set-header Set-Cookie %[var(txn.spoe.sso_auth.set_cookie_header)] if { var(txn.spoe.sso_auth.set_cookie_header) -m found }
+        http-response add-header Set-Cookie %[var(txn.spoe.sso_auth.set_auth_state_header)] if { var(txn.spoe.sso_auth.set_auth_state_header) -m found }
+        http-response set-header Set-Cookie %[var(txn.spoe.sso_auth.clear_cookie_header)] if { var(txn.spoe.sso_auth.clear_cookie_header) -m found }
+
+        # Forward claims
+        http-request set-header X-Auth-Email %[var(txn.spoe.sso_auth.email)] if { var(txn.spoe.sso_auth.email) -m found }
+        http-request set-header X-Auth-Groups %[var(txn.spoe.sso_auth.groups)] if { var(txn.spoe.sso_auth.groups) -m found }
+
+        # Return 200 with info for authenticated requests
+        http-request return status 200 content-type text/plain string "allowed=true\nemail=%[var(txn.spoe.sso_auth.email)]\ngroups=%[var(txn.spoe.sso_auth.groups)]\n" if { var(txn.spoe.sso_auth.allowed) -m bool }
+
+        # Route mock-oidc requests
+        use_backend mock-oidc if { path_beg /mock-oidc }
+
+        default_backend app
+
+    backend app
+        server app 127.0.0.1:9999
+
+    backend mock-oidc
+        http-request replace-path /mock-oidc/(.*) /\1
+        server mock-oidc mock-oidc:8080
+
+    backend spoa-hub-backend
+        mode tcp
+        server hub unix@/var/run/spoe/hub.sock
+
+  spoe-sso-auth.conf: |
+    [sso-auth]
+    spoe-agent sso-auth-agent
+        groups check-sso-auth-group
+        option var-prefix spoe
+        option continue-on-error
+        timeout hello      2s
+        timeout idle       5m
+        timeout processing 10s
+        use-backend spoa-hub-backend
+
+    spoe-message check-sso-auth
+        args provider=var(txn.sso_provider) provider_config=var(txn.sso_provider_config) cookie=req.cook(sso_session) auth_state_cookie=req.cook(sso_auth_state) request_path=path request_method=method callback_code=url_param(code) callback_state=url_param(state) is_logout=var(txn.is_logout)
+
+    spoe-group check-sso-auth-group
+        messages check-sso-auth
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hub-config
+  namespace: e2e-sso-auth
+data:
+  config.toml: |
+    plugin_dir = "/etc/haproxy-spoa-hub/plugins"
+    default_timeout_ms = 100
+    log_level = "debug"
+
+    [[listeners]]
+    type = "unix"
+    address = "/var/run/spoe/hub.sock"
+
+    [[plugins]]
+    name = "sso_auth"
+    library = "libsso_auth_plugin.so"
+    messages = ["check-sso-auth"]
+    timeout_ms = 10000
+
+    [plugins.params]
+    cookie_secret_1 = "e2e-test-secret-at-least-16-chars"
+    cookie_domain = "localhost"
+    cookie_secure = false
+    default_timeout_ms = 5000
+    max_providers = 16
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sso-maps
+  namespace: e2e-sso-auth
+data:
+  sso-providers.map: |
+    mock-oidc {"protocol":"oidc","client_id":"test-client","client_secret":"test-secret","discovery_url":"http://mock-oidc:8080/default/.well-known/openid-configuration","redirect_uri":"__REDIRECT_URI__","extract_claims":"email,name,groups"}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mock-oidc-config
+  namespace: e2e-sso-auth
+data:
+  config.json: |
+    {
+      "interactiveLogin": false,
+      "tokenCallbacks": [
+        {
+          "issuerId": "default",
+          "requestMappings": [
+            {
+              "requestParam": "grant_type",
+              "match": ".*",
+              "claims": {
+                "sub": "testuser",
+                "email": "testuser@example.com",
+                "email_verified": true,
+                "name": "Test User",
+                "preferred_username": "testuser",
+                "groups": ["admin", "users"]
+              }
+            }
+          ]
+        }
+      ]
+    }
