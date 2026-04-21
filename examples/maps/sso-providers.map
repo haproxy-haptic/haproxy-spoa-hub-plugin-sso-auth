@@ -1,0 +1,9 @@
+# Single map file: provider name → JSON config
+# One line per provider. HAProxy looks up the provider name and passes
+# the entire JSON string to the plugin via the provider_config SPOE arg.
+#
+# OIDC provider example:
+mykeycloak {"protocol":"oidc","client_id":"haproxy-app","client_secret":"s3cret","discovery_url":"https://keycloak.example.com/realms/main/.well-known/openid-configuration","redirect_uri":"https://example.com/oidc/callback","extract_claims":"email,name,groups"}
+
+# SAML provider example:
+corporate-adfs {"protocol":"saml","client_id":"urn:haproxy:sp","auth_url":"https://adfs.example.com/adfs/ls/","redirect_uri":"https://example.com/saml/acs","idp_cert":"MIICxDCCAaygAw...base64-cert...","logout_url":"https://adfs.example.com/adfs/ls/?wa=wsignout1.0","extract_claims":"email,displayname,groups"}

@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SSO Auth Plugin Configuration",
+  "description": "Global settings for the sso_auth plugin (hub TOML [plugins.params])",
+  "type": "object",
+  "required": ["cookie_secret_1", "cookie_domain"],
+  "properties": {
+    "cookie_secret_1": {
+      "type": "string",
+      "minLength": 16,
+      "description": "Primary cookie encryption secret (min 16 chars)"
+    },
+    "cookie_secret_2": {
+      "type": "string",
+      "minLength": 16,
+      "description": "Secondary cookie encryption secret for rotation"
+    },
+    "current_cookie_secret": {
+      "type": "integer",
+      "enum": [1, 2],
+      "default": 1,
+      "description": "Which secret is active for new cookies"
+    },
+    "cookie_domain": {
+      "type": "string",
+      "description": "Cookie Domain attribute"
+    },
+    "cookie_secure": {
+      "type": "boolean",
+      "default": true,
+      "description": "Cookie Secure flag"
+    },
+    "cookie_httponly": {
+      "type": "boolean",
+      "default": true,
+      "description": "Cookie HttpOnly flag"
+    },
+    "cookie_samesite": {
+      "type": "string",
+      "enum": ["Strict", "Lax", "None"],
+      "default": "Lax",
+      "description": "Cookie SameSite attribute"
+    },
+    "cookie_lifetime_secs": {
+      "type": "integer",
+      "minimum": 60,
+      "default": 36000,
+      "description": "Session cookie lifetime in seconds"
+    },
+    "default_timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "default": 5000,
+      "description": "Default IdP HTTP request timeout in ms"
+    },
+    "fail_open": {
+      "type": "boolean",
+      "default": false,
+      "description": "Allow requests on IdP communication error"
+    },
+    "max_providers": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 256,
+      "description": "Maximum number of cached provider configs"
+    },
+    "clock_skew_secs": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 60,
+      "description": "Allowed clock skew for token/assertion validation"
+    },
+    "discovery_ttl_secs": {
+      "type": "integer",
+      "minimum": 60,
+      "default": 3600,
+      "description": "OIDC discovery metadata cache TTL (JWKS is refreshed alongside discovery)"
+    }
+  },
+  "additionalProperties": false
+}

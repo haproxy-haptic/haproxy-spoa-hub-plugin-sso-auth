@@ -1,0 +1,21 @@
+FROM rust:1.86-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxml2-dev libxmlsec1-dev libxmlsec1-openssl \
+    pkg-config libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
+RUN cargo build --release
+
+FROM registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub:latest
+
+# Install SAML runtime dependencies (xmlsec1 + openssl).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxmlsec1-openssl libxml2 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/libhaproxy_spoa_hub_plugin_sso_auth.so /etc/haproxy-spoa-hub/plugins/libsso_auth_plugin.so
