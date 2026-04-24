@@ -15,7 +15,7 @@ abi_stable = "0.11"
 openidconnect = { version = "4.0", default-features = false, features = ["ureq", "rustls-tls"] }
 samael = { git = "https://github.com/njaremko/samael.git", features = ["xmlsec"] }
 aes-gcm = "0.10"
-hkdf = "0.12"
+hkdf = "0.13"
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 lru = "0.17"
