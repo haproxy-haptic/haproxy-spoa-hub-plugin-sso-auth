@@ -18,7 +18,7 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
-lru = "0.12"
+lru = "0.17"
 log = "0.4"
 base64 = "0.22"
 sha2 = "0.10"
