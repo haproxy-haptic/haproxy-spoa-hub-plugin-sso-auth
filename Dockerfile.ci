@@ -31,10 +31,17 @@ EOF
 # Stage 2: Build natively on the target platform (may use QEMU).
 FROM rust:1.95-bookworm AS builder
 
+ARG CARGO_AUDITABLE_VERSION=0.7.4
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev libxmlsec1-dev libxmlsec1-openssl \
     pkg-config libclang-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# cargo-auditable embeds a compressed Cargo.lock-equivalent in the binary
+# so syft + grype can enumerate Rust deps from the published .so files
+# without source access. 0.7.0+ required for Rust edition 2024.
+RUN cargo install --locked "cargo-auditable@${CARGO_AUDITABLE_VERSION}"
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
@@ -45,7 +52,7 @@ COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
 COPY --from=fetcher /build/vendor vendor/
 COPY --from=fetcher /build/.cargo .cargo/
 
-RUN cargo build --release
+RUN cargo auditable build --release
 
 FROM scratch
 COPY --from=builder /build/target/release/libhaproxy_spoa_hub_plugin_sso_auth.so /
