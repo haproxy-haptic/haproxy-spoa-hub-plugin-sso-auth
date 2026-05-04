@@ -948,17 +948,17 @@ dependencies = [
 
 [[package]]
 name = "haproxy-spoa-hub-plugin-api"
-version = "0.2.0"
-source = "git+https://gitlab.com/haproxy-haptic/haproxy-spoa-hub.git#512ece7753005d7797a0f2adeed59479251c2a64"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3481fa0722039a8b6cccf1ddbbd24f8b40495c361579a3b70a0fb63b2b30c8ab"
 dependencies = [
  "abi_stable",
 ]
 
 [[package]]
 name = "haproxy-spoa-hub-plugin-sso-auth"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
- "abi_stable",
  "aes-gcm",
  "base64 0.22.1",
  "chrono",
