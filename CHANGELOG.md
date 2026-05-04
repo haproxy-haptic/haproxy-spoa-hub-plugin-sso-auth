@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-04
+
+### Changed
+
+- **BREAKING**: Bumped `haproxy-spoa-hub-plugin-api` dependency to `0.5` (the hand-rolled `#[repr(C)]` vtable migration). This plugin's `.so` will only load on `haproxy-spoa-hub` v0.5.0 or newer. Older hubs reject the load with a "missing required symbol 'get_plugin_vtable'" error since the entry-symbol naming changed.
+- Switched `haproxy-spoa-hub-plugin-api` from a git source dependency on the `haproxy-spoa-hub` repository to the crates.io release. CI no longer needs to fetch the upstream repo at build time.
+- Dropped the direct `abi_stable = "0.11"` dependency. Plugin-api re-exports the abi_stable types this crate uses; no direct dep is required.
+
 ## [0.1.1] - 2026-04-28
 
 ### Added
