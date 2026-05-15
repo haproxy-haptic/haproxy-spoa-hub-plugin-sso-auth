@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-15
+
+### Added
+
+- **Prometheus metrics** via the `haproxy-spoa-hub` v0.6.0 plugin-API v2 vtable. Surfaced through the hub's `/metrics` endpoint under the `plugin_sso_auth_` prefix.
+
+  | metric                            | kind      | labels       |
+  |-----------------------------------|-----------|--------------|
+  | `auth_decisions_total`            | counter   | `outcome`    |
+  | `auth_decision_duration_seconds`  | histogram | _(none)_     |
+
+  `outcome` ∈ `{redirect, callback, allow, deny, logout, error}` — corresponds 1:1 to the `AuthAction` variants the plugin returns. Operators can chart "redirects accumulating without callbacks" (broken SSO flow) or "denies without errors" (genuine rejected sessions vs IdP-side problems) in single PromQL queries.
+
+  The hub-surfaced recorder uses a separate static (`PROM_METRICS`) so it doesn't collide with the existing internal `METRICS: AuthMetrics` static the plugin uses for per-provider accounting (cache-eviction decisions etc.). The two have different roles: AuthMetrics is internal logic state, the new recorder is user-facing observability.
+
+### Changed
+
+- Plugin-API dep `^0.5` → `^0.6` to pick up `MetricRecorder` and the `metrics_static` macro arm. Vtable change is append-only — this plugin's v0.3.0 .so still loads on v0.5.x hubs (metrics silent there).
+
 ## [0.2.0] - 2026-05-04
 
 ### Changed
