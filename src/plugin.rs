@@ -1,5 +1,7 @@
 #[allow(unused_imports)] // Used by define_plugin! macro expansion.
-use haproxy_spoa_hub_plugin_api::{PluginContext, ProcessingResult, SpoeMessage, define_plugin};
+use haproxy_spoa_hub_plugin_api::{
+    MetricRecorder, PluginContext, ProcessingResult, SpoeMessage, define_plugin,
+};
 use std::sync::OnceLock;
 
 use crate::action::AuthAction;
@@ -14,6 +16,14 @@ use crate::util::get_nonempty_string;
 static CONFIG: OnceLock<PluginConfig> = OnceLock::new();
 static CACHE: OnceLock<ProviderCache> = OnceLock::new();
 static METRICS: OnceLock<AuthMetrics> = OnceLock::new();
+
+/// Plugin-scoped Prometheus metric recorder. Named `PROM_METRICS` to
+/// avoid colliding with the existing `METRICS` static that holds the
+/// per-provider `AuthMetrics` counters. The two have different roles:
+/// `AuthMetrics` is internal accounting consumed by the plugin's own
+/// logic (cache-eviction decisions, etc.), this one surfaces user-
+/// facing observability via the hub's `/metrics` endpoint.
+static PROM_METRICS: MetricRecorder = MetricRecorder::new();
 
 #[derive(Debug)]
 struct SsoAuthPlugin;
@@ -54,6 +64,7 @@ define_plugin!(SsoAuthPlugin, {
             .ok_or("sso_auth: provider cache not initialized")?;
         let metrics = METRICS.get().ok_or("sso_auth: metrics not initialized")?;
 
+        let started = std::time::Instant::now();
         let action = match process_message(message, config, cache, metrics) {
             Ok(action) => action,
             Err(e) => {
@@ -62,12 +73,34 @@ define_plugin!(SsoAuthPlugin, {
             }
         };
 
+        // Hub adds `plugin_sso_auth_` prefix. `outcome` is the action
+        // kind so operators can see at a glance whether SSO is moving
+        // traffic through or stuck in a redirect loop. The histogram
+        // is unlabelled for bounded cardinality; per-provider tails
+        // matter less than the global p50/p99 for SSO sizing.
+        let outcome = match &action {
+            AuthAction::Redirect { .. } => "redirect",
+            AuthAction::Callback { .. } => "callback",
+            AuthAction::Allow { .. } => "allow",
+            AuthAction::Deny { .. } => "deny",
+            AuthAction::Logout { .. } => "logout",
+            AuthAction::Error { .. } => "error",
+        };
+        PROM_METRICS.counter("auth_decisions_total", &[("outcome", outcome)], 1);
+        PROM_METRICS.histogram(
+            "auth_decision_duration_seconds",
+            &[],
+            started.elapsed().as_secs_f64(),
+        );
+
         Ok(action.into_variables(config))
     }
 
     fn config_schema(&self) -> Option<&str> {
         Some(PluginConfig::config_schema())
     }
+
+    metrics_static = PROM_METRICS;
 });
 
 fn process_message(

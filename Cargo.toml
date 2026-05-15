@@ -1,6 +1,6 @@
 [package]
 name = "haproxy-spoa-hub-plugin-sso-auth"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.86"
 license = "Apache-2.0"
@@ -10,10 +10,10 @@ description = "HAProxy SPOA hub plugin for SSO authentication via OIDC and SAML"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Requires plugin-api 0.5.0+ (the hand-rolled #[repr(C)] vtable
-# migration). This plugin will not load on hubs older than v0.5.0.
-# Switched from a git dep to the crates.io release at the same time.
-haproxy-spoa-hub-plugin-api = "0.5"
+# Requires plugin-api 0.6.0+ for the v2 vtable's set_metric_recorder.
+# Plugin still loads on v0.5.x hubs (append-only ABI; old hubs read
+# only what they know).
+haproxy-spoa-hub-plugin-api = "0.6"
 openidconnect = { version = "4.0", default-features = false, features = ["ureq", "rustls-tls"] }
 samael = { git = "https://github.com/njaremko/samael.git", features = ["xmlsec"] }
 aes-gcm = "0.10"
