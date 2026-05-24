@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 # Requires plugin-api 0.6.0+ for the v2 vtable's set_metric_recorder.
 # Plugin still loads on v0.5.x hubs (append-only ABI; old hubs read
 # only what they know).
-haproxy-spoa-hub-plugin-api = "0.6"
+haproxy-spoa-hub-plugin-api = "0.7"
 openidconnect = { version = "4.0", default-features = false, features = ["ureq", "rustls-tls"] }
 samael = { git = "https://github.com/njaremko/samael.git", features = ["xmlsec"] }
 aes-gcm = "0.10"
