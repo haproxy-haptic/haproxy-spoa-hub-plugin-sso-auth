@@ -1,7 +1,7 @@
 # Stage 1: Fetch and vendor dependencies on the build host (no QEMU).
 # This avoids the 32-bit QEMU file-size limitation when accessing git
 # repos on armv7.
-FROM --platform=$BUILDPLATFORM rust:1.95-bookworm AS fetcher
+FROM --platform=$BUILDPLATFORM rust:1.96-bookworm AS fetcher
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
@@ -29,7 +29,7 @@ directory = "vendor/"
 EOF
 
 # Stage 2: Build natively on the target platform (may use QEMU).
-FROM rust:1.95-bookworm AS builder
+FROM rust:1.96-bookworm AS builder
 
 ARG CARGO_AUDITABLE_VERSION=0.7.4
 
