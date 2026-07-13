@@ -422,12 +422,10 @@ fn create_saml_session(
 }
 
 fn generate_request_id() -> String {
-    use aes_gcm::aead::OsRng;
-    use aes_gcm::aead::rand_core::RngCore;
+    use aes_gcm::aead::Generate;
     use std::fmt::Write;
 
-    let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
+    let bytes: [u8; 16] = Generate::generate();
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in &bytes {
         let _ = write!(s, "{b:02x}");

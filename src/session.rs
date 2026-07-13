@@ -1,5 +1,5 @@
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
-use aes_gcm::{AeadCore, Aes256Gcm};
+use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hkdf::Hkdf;
@@ -61,7 +61,7 @@ impl SsoSession {
 
         let key = derive_key(config.active_secret());
         let cipher = Aes256Gcm::new(&key.into());
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = Nonce::<Aes256Gcm>::generate();
 
         let ciphertext = cipher
             .encrypt(&nonce, plaintext.as_ref())
@@ -87,17 +87,18 @@ impl SsoSession {
         }
 
         // blob[0] is the version byte — reserved for future migration.
-        let nonce = aes_gcm::aead::generic_array::GenericArray::from_slice(&blob[1..13]);
+        let nonce =
+            Nonce::<Aes256Gcm>::try_from(&blob[1..13]).map_err(|_| "invalid nonce".to_owned())?;
         let ciphertext = &blob[13..];
 
         // Try active secret first.
-        if let Ok(session) = try_decrypt(ciphertext, nonce, config.active_secret()) {
+        if let Ok(session) = try_decrypt(ciphertext, &nonce, config.active_secret()) {
             return Ok(session);
         }
 
         // Fall back to secondary secret for rotation support.
         if let Some(fallback) = config.fallback_secret() {
-            if let Ok(session) = try_decrypt(ciphertext, nonce, fallback) {
+            if let Ok(session) = try_decrypt(ciphertext, &nonce, fallback) {
                 return Ok(session);
             }
         }
@@ -108,10 +109,7 @@ impl SsoSession {
 
 fn try_decrypt(
     ciphertext: &[u8],
-    nonce: &aes_gcm::aead::generic_array::GenericArray<
-        u8,
-        aes_gcm::aead::generic_array::typenum::U12,
-    >,
+    nonce: &Nonce<Aes256Gcm>,
     secret: &[u8],
 ) -> Result<SsoSession, String> {
     let key = derive_key(secret);
