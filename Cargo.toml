@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 haproxy-spoa-hub-plugin-api = "0.7"
 openidconnect = { version = "4.0", default-features = false, features = ["ureq", "rustls-tls"] }
 samael = { git = "https://github.com/njaremko/samael.git", features = ["xmlsec"] }
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 hkdf = "0.13"
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }

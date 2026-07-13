@@ -1,5 +1,5 @@
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
-use aes_gcm::{AeadCore, Aes256Gcm};
+use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hkdf::Hkdf;
@@ -35,7 +35,7 @@ impl AuthState {
 
         let key = derive_auth_state_key(secret);
         let cipher = Aes256Gcm::new(&key.into());
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = Nonce::<Aes256Gcm>::generate();
 
         let ciphertext = cipher
             .encrypt(&nonce, plaintext.as_ref())
@@ -60,14 +60,15 @@ impl AuthState {
         }
 
         // blob[0] is the version byte — reserved for future migration.
-        let nonce = aes_gcm::aead::generic_array::GenericArray::from_slice(&blob[1..13]);
+        let nonce =
+            Nonce::<Aes256Gcm>::try_from(&blob[1..13]).map_err(|_| "invalid nonce".to_owned())?;
         let ciphertext = &blob[13..];
 
         let key = derive_auth_state_key(secret);
         let cipher = Aes256Gcm::new(&key.into());
 
         let plaintext = cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|_| "auth state decryption failed".to_owned())?;
 
         postcard::from_bytes(&plaintext).map_err(|e| format!("deserialize auth state: {e}"))
