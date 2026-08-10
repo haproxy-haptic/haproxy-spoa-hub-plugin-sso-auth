@@ -87,7 +87,9 @@ docker run -d --name smoke-hub \
 echo "Waiting for plugin initialization..."
 PLUGIN_LOADED=false
 for i in $(seq 1 60); do
-    if docker logs smoke-hub 2>&1 | grep -q "sso_auth"; then
+    # Match in-shell: with `| grep -q`, grep exits on first match, the
+    # producer takes SIGPIPE, and pipefail reports 141 -- a match read as a miss.
+    if [[ "$(docker logs smoke-hub 2>&1)" == *sso_auth* ]]; then
         echo "Plugin loaded after ${i}s"
         PLUGIN_LOADED=true
         break
@@ -180,7 +182,7 @@ else
     curl -s -D "${TMPHEADERS}" -o /dev/null --max-time 10 "${BASE_URL}/oidc-app" 2>/dev/null || true
     LOCATION=$(grep -i "location" "${TMPHEADERS}" 2>/dev/null | head -1 || true)
     rm -f "${TMPHEADERS}"
-    if echo "${LOCATION}" | grep -q "authorize"; then
+    if [[ "${LOCATION}" == *authorize* ]]; then
         echo "  PASS: Redirect to authorize endpoint"
         PASSED=$((PASSED + 1))
     else
