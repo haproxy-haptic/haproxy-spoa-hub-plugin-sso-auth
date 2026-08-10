@@ -5,9 +5,14 @@ FROM rust:1.97-bookworm
 
 ARG CARGO_AUDITABLE_VERSION=0.7.4
 
+# linux-libc-dev is Multi-Arch: same, so the amd64 copy baked into the base image
+# and the armhf copy must be the exact same version; pin both to what armhf offers.
 RUN dpkg --add-architecture armhf && \
     apt-get update && \
-    apt-get install -y --no-install-recommends \
+    KERNEL_HEADERS="$(apt-cache policy linux-libc-dev:armhf | awk '/Candidate:/{print $2}')" && \
+    apt-get install -y --no-install-recommends --allow-downgrades \
+        "linux-libc-dev=${KERNEL_HEADERS}" \
+        "linux-libc-dev:armhf=${KERNEL_HEADERS}" \
         gcc-arm-linux-gnueabihf \
         libxml2-dev:armhf \
         libxmlsec1-dev:armhf \
