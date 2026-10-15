@@ -20,10 +20,6 @@ replace-with = "vendored-sources"
 git = "https://github.com/njaremko/samael.git"
 replace-with = "vendored-sources"
 
-[source."git+https://gitlab.com/haproxy-haptic/haproxy-spoa-hub.git"]
-git = "https://gitlab.com/haproxy-haptic/haproxy-spoa-hub.git"
-replace-with = "vendored-sources"
-
 [source.vendored-sources]
 directory = "vendor/"
 EOF

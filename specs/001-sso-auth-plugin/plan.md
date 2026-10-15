@@ -140,7 +140,7 @@ external-auth plugin's proven e2e pattern:
 **Dockerfile.hub** (multi-stage):
 1. Build stage: `rust:1.86-bookworm` — compile plugin with SAML C
    dependencies (`libxml2-dev`, `libxmlsec1-dev`, `libxmlsec1-openssl`)
-2. Runtime stage: `registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub:latest`
+2. Runtime stage: `ghcr.io/haproxy-haptic/haproxy-spoa-hub:latest`
    — copy `.so` to plugin directory
 
 **ConfigMaps** provide:
