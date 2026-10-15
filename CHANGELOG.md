@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Development and releases moved to GitHub (`https://github.com/haproxy-haptic/haproxy-spoa-hub-plugin-sso-auth`); GitLab is a read-only mirror.
 - Bumped `aes-gcm` `0.10` → `0.11` (new `aead` 0.6 / `hybrid-array` backend). Cookie encryption is unchanged on the wire — existing session and auth-state cookies keep decrypting across the upgrade.
 
 ## [0.3.0] - 2026-05-15

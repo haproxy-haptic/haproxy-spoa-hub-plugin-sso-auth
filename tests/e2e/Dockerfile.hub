@@ -11,7 +11,7 @@ COPY src/ src/
 COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
 RUN cargo build --release
 
-FROM registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub:latest
+FROM ghcr.io/haproxy-haptic/haproxy-spoa-hub:latest
 
 # Install SAML runtime dependencies (xmlsec1 + openssl).
 RUN apt-get update && apt-get install -y --no-install-recommends \

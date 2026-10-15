@@ -1,4 +1,4 @@
-FROM registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub:latest
+FROM ghcr.io/haproxy-haptic/haproxy-spoa-hub:latest
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxmlsec1-openssl libxml2 \

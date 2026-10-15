@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  # renovate: datasource=github-releases depName=kubernetes-sigs/kind
+  KIND_VERSION: "v0.27.0"
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    container: rust:1.94-bookworm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup component add rustfmt
+      - run: cargo fmt -- --check
+
+  clippy:
+    runs-on: ubuntu-24.04
+    container: rust:1.94-bookworm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install SAML C dependencies
+        run: apt-get update -qq && apt-get install -y -qq libxml2-dev libxmlsec1-dev libxmlsec1-openssl pkg-config libclang-dev >/dev/null
+      - run: rustup component add clippy
+      - run: cargo clippy --workspace -- -D warnings -A deprecated -A clippy::type-complexity
+
+  test:
+    runs-on: ubuntu-24.04
+    container: rust:1.94-bookworm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install SAML C dependencies
+        run: apt-get update -qq && apt-get install -y -qq libxml2-dev libxmlsec1-dev libxmlsec1-openssl pkg-config libclang-dev >/dev/null
+      - run: cargo test --workspace
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install kind and kubectl
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSLo "${RUNNER_TEMP}/bin/kind" "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo "${RUNNER_TEMP}/bin/kubectl" "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x "${RUNNER_TEMP}/bin/kind" "${RUNNER_TEMP}/bin/kubectl"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+      - run: tests/e2e/run.sh
+
+  build:
+    uses: ./.github/workflows/build.yml
