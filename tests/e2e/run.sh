@@ -210,6 +210,34 @@ echo "Test 4b: Forged session cookie starts a new sign-in"
 CODE=$(incurl -o /dev/null -w '%{http_code}' -H 'Cookie: sso_session=AAAA' "${APP}/oidc-app" || echo "000")
 assert_eq "HTTP status is 302" "302" "${CODE}"
 
+# --- Test 4c: Hub reload applies a new provider ---
+echo ""
+echo "Test 4c: A provider added by a hub reload is used"
+CODE=$(incurl -o /dev/null -w '%{http_code}' "${APP}/reload-app" || echo "000")
+assert_eq "Unknown provider fails closed before the reload" "503" "${CODE}"
+kubectl -n e2e-sso-auth get configmap hub-config -o jsonpath='{.data.config\.toml}' > "${TMPDIR}/config.toml"
+cat >> "${TMPDIR}/config.toml" <<'TOML'
+
+[plugins.params.providers.reloaded]
+protocol = "oidc"
+client_id = "reloaded-client"
+client_secret = "test-secret"
+discovery_url = "http://mock-oidc:8080/default/.well-known/openid-configuration"
+redirect_uri = "http://haproxy-hub:8080/reload-app/callback"
+TOML
+kubectl -n e2e-sso-auth create configmap hub-config --from-file=config.toml="${TMPDIR}/config.toml" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+RELOADED=""
+for _ in $(seq 1 60); do
+    HEADERS=$(incurl -D - -o /dev/null "${APP}/reload-app" || true)
+    if [[ "${HEADERS}" == *"client_id=reloaded-client"* ]]; then
+        RELOADED="yes"
+        break
+    fi
+    sleep 3
+done
+assert_eq "Redirect uses the reloaded provider" "yes" "${RELOADED}"
+
 # --- Test 5: Fail-closed (OIDC IdP down) ---
 echo ""
 echo "Test 5: Fail-closed when IdP is down"

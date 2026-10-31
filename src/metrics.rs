@@ -14,6 +14,7 @@ pub struct ProviderCounters {
 }
 
 /// Auth-domain counters broken down by provider name (FR-021).
+#[derive(Debug)]
 pub struct AuthMetrics {
     providers: RwLock<HashMap<String, ProviderCounters>>,
     pub cache_evictions: AtomicU64,

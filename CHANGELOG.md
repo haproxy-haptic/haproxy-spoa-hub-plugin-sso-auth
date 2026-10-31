@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-31
+
+### Fixed
+
+- A hub reload never applied a changed configuration: the plugin kept its settings in process-wide statics that only the first initialisation could set, so providers, secrets and cookie settings stayed at their startup values. Each plugin instance now owns its configuration.
+
 ## [0.4.0] - 2026-10-31
 
 ### Added
