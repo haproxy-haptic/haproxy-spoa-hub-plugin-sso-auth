@@ -1,10 +1,3 @@
-#[allow(unused_imports)] // Used by define_plugin! macro expansion.
-use haproxy_spoa_hub_plugin_api::{
-    Diagnostic, MetricRecorder, PluginContext, ProcessingResult, SpoeMessage, SpoeValue,
-    TxnVariable, define_plugin,
-};
-use std::sync::OnceLock;
-
 use crate::action::AuthAction;
 use crate::cache::ProviderCache;
 use crate::config::PluginConfig;
@@ -14,25 +7,34 @@ use crate::provider::{Protocol, ProviderConfig};
 use crate::saml;
 use crate::session::MAX_COOKIE_CHUNKS;
 use crate::util::get_nonempty_string;
+#[allow(unused_imports)] // Used by define_plugin! macro expansion.
+use haproxy_spoa_hub_plugin_api::{
+    Diagnostic, MetricRecorder, PluginContext, ProcessingResult, SpoeMessage, SpoeValue,
+    TxnVariable, define_plugin,
+};
 
-static CONFIG: OnceLock<PluginConfig> = OnceLock::new();
-static CACHE: OnceLock<ProviderCache> = OnceLock::new();
-static METRICS: OnceLock<AuthMetrics> = OnceLock::new();
-
-/// Plugin-scoped Prometheus metric recorder. Named `PROM_METRICS` to
-/// avoid colliding with the existing `METRICS` static that holds the
-/// per-provider `AuthMetrics` counters. The two have different roles:
-/// `AuthMetrics` is internal accounting consumed by the plugin's own
-/// logic (cache-eviction decisions, etc.), this one surfaces user-
-/// facing observability via the hub's `/metrics` endpoint.
+/// Plugin-scoped Prometheus metric recorder, surfaced through the hub's
+/// `/metrics` endpoint. `AuthMetrics` is separate internal accounting.
 static PROM_METRICS: MetricRecorder = MetricRecorder::new();
 
+/// State lives in the instance, not in statics: a hub reload initialises a
+/// new instance in the same process, and a `OnceLock` would keep the first
+/// configuration forever.
+#[derive(Debug, Default)]
+struct SsoAuthPlugin {
+    state: Option<PluginState>,
+}
+
 #[derive(Debug)]
-struct SsoAuthPlugin;
+struct PluginState {
+    config: PluginConfig,
+    cache: ProviderCache,
+    metrics: AuthMetrics,
+}
 
 define_plugin!(SsoAuthPlugin, {
     fn new() -> Self {
-        SsoAuthPlugin
+        SsoAuthPlugin::default()
     }
 
     fn init(
@@ -41,9 +43,11 @@ define_plugin!(SsoAuthPlugin, {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let config = PluginConfig::from_context(context)?;
         let max_providers = config.max_providers;
-        let _ = CONFIG.set(config);
-        let _ = CACHE.set(ProviderCache::new(max_providers));
-        let _ = METRICS.set(AuthMetrics::new());
+        self.state = Some(PluginState {
+            config,
+            cache: ProviderCache::new(max_providers),
+            metrics: AuthMetrics::new(),
+        });
         log::info!("sso_auth plugin initialized (max_providers={max_providers})");
         Ok(())
     }
@@ -60,11 +64,14 @@ define_plugin!(SsoAuthPlugin, {
         &self,
         message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
-        let config = CONFIG.get().ok_or("sso_auth: plugin not initialized")?;
-        let cache = CACHE
-            .get()
-            .ok_or("sso_auth: provider cache not initialized")?;
-        let metrics = METRICS.get().ok_or("sso_auth: metrics not initialized")?;
+        let PluginState {
+            config,
+            cache,
+            metrics,
+        } = self
+            .state
+            .as_ref()
+            .ok_or("sso_auth: plugin not initialized")?;
 
         let started = std::time::Instant::now();
         let present_chunks = session_chunks(message).len();

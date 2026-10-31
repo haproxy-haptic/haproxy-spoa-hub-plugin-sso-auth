@@ -25,12 +25,14 @@ data:
         http-request set-var(txn.sso_groups) str(admins) if { path_beg /admin-app }
         http-request set-var(txn.sso_groups) str(users) if { path_beg /users-app }
         http-request set-var(txn.sso_provider) str(legacy) if { path_beg /legacy-app }
+        http-request set-var(txn.sso_provider) str(reloaded) if { path_beg /reload-app }
         http-request set-var(txn.sso_provider_config) var(txn.sso_provider),map_str(/etc/haproxy/maps/sso-providers.map) if { var(txn.sso_provider) -m str legacy }
 
         http-request send-spoe-group sso-auth check-sso-auth-group if { var(txn.sso_provider) -m found }
 
         http-request redirect location %[var(txn.spoe.sso_auth.redirect_url)] if { var(txn.spoe.sso_auth.action) -m str redirect }
         http-request deny deny_status 403 if { var(txn.spoe.sso_auth.action) -m str forbidden }
+        http-request deny deny_status 503 if { var(txn.sso_provider) -m found } !{ var(txn.spoe.sso_auth.allowed) -m bool } { var(txn.spoe.sso_auth.status_code) -m int 503 }
         http-request deny deny_status 401 if { var(txn.sso_provider) -m found } !{ var(txn.spoe.sso_auth.allowed) -m bool }
 
         # http-after-response also covers the redirects HAProxy generates.
