@@ -149,52 +149,66 @@ fi
 echo ""
 echo "=== Running OIDC Tests ==="
 
+# The browser leg runs inside the cluster: the mock IdP's authorize endpoint
+# carries its in-cluster host name, which the host can't resolve.
+APP="http://haproxy-hub:8080"
+incurl() {
+    kubectl -n e2e-sso-auth exec deploy/haproxy-hub -c curl -- curl -s --max-time 15 "$@"
+}
+
 # --- Test 1: Unauthenticated request returns redirect ---
 echo "Test 1: Unauthenticated request returns redirect"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${BASE_URL}/oidc-app" || echo "000")
-assert_eq "HTTP status is 302" "302" "${HTTP_CODE}"
+HEADERS=$(incurl -D - -o /dev/null "${APP}/oidc-app/page?x=1" || true)
+assert_contains "HTTP status is 302" "${HEADERS}" "302"
+assert_contains "Redirect to authorize endpoint" "${HEADERS}" "authorize"
+assert_contains "Redirect contains code_challenge" "${HEADERS}" "code_challenge"
+assert_contains "Auth state cookie set on the redirect" "${HEADERS}" "sso_auth_state="
+LEGACY=$(incurl -D - -o /dev/null "${APP}/legacy-app" || true)
+assert_contains "provider_config map provider still redirects" "${LEGACY}" "authorize"
 
-# Use a temp file to avoid pipefail issues with grep returning 1 when no match.
-curl -s -D "${TMPDIR}/headers.txt" -o /dev/null --max-time 5 "${BASE_URL}/oidc-app" 2>/dev/null || true
-LOCATION=$(grep -i "location" "${TMPDIR}/headers.txt" 2>/dev/null | head -1 | tr -d '\r\n' || true)
-if [[ -z "${LOCATION}" ]]; then
-    echo "  FAIL: No Location header in redirect response"
-    echo "  Response headers: ${HEADERS}"
-    FAILED=$((FAILED + 1))
-else
-    assert_contains "Redirect to authorize endpoint" "${LOCATION}" "authorize"
-    assert_contains "Redirect contains client_id" "${LOCATION}" "client_id"
-    assert_contains "Redirect contains code_challenge" "${LOCATION}" "code_challenge"
-fi
-
-# --- Test 2: Full OIDC flow (follow redirects) ---
+# --- Test 2: Full OIDC flow returns to the original page ---
 echo ""
 echo "Test 2: Full OIDC flow with auto-grant"
-RESPONSE=$(curl -s -L -c "${COOKIE_JAR}" -b "${COOKIE_JAR}" --max-redirs 10 "${BASE_URL}/oidc-app" 2>/dev/null || true)
-# The mock OIDC server auto-grants; the flow should complete.
-if [[ -n "${RESPONSE}" ]]; then
-    assert_contains "Response contains allowed=true" "${RESPONSE}" "allowed=true" || true
+RESPONSE=$(incurl -L -c /tmp/jar -b /tmp/jar --max-redirs 10 -w '\nfinal=%{url_effective}' "${APP}/oidc-app/page?x=1" || true)
+if [[ "${RESPONSE}" != *"allowed=true"* ]]; then
+    echo "--- Sign-in response chain ---"
+    incurl -v -L -c /tmp/jar-debug -b /tmp/jar-debug --max-redirs 10 "${APP}/oidc-app/page?x=1" 2>&1 | grep -E '^[<>] (GET|HTTP|[Ll]ocation|[Ss]et-[Cc]ookie|[Cc]ookie)' || true
+    echo "--- Hub log ---"
+    kubectl -n e2e-sso-auth logs deploy/haproxy-hub -c hub --tail=30 2>/dev/null || true
 fi
+echo "--- Signed-in response ---"
+printf '%s\n' "${RESPONSE}" | cut -c1-120
+assert_contains "Response contains allowed=true" "${RESPONSE}" "allowed=true"
+assert_contains "Returned to the original page" "${RESPONSE}" "final=${APP}/oidc-app/page?x=1"
+assert_contains "Claim extracted" "${RESPONSE}" "email=testuser@example.com"
+TOKEN=$(printf '%s\n' "${RESPONSE}" | sed -n 's/^token=//p')
+assert_eq "ID token passed (three JWT segments)" "3" "$(printf '%s' "${TOKEN}" | awk -F. '{print NF}')"
+JAR=$(kubectl -n e2e-sso-auth exec deploy/haproxy-hub -c curl -- cat /tmp/jar 2>/dev/null || true)
+assert_contains "Session cookie stored" "${JAR}" "sso_session"
 
 # --- Test 3: Authenticated request with cookie ---
 echo ""
 echo "Test 3: Authenticated request with cookie"
-if [[ -f "${COOKIE_JAR}" ]] && grep -q "sso_session" "${COOKIE_JAR}" 2>/dev/null; then
-    RESPONSE=$(curl -s -b "${COOKIE_JAR}" "${BASE_URL}/oidc-app/other-page" 2>/dev/null)
-    assert_contains "Authenticated response" "${RESPONSE}" "allowed=true"
-else
-    echo "  SKIP: No session cookie from test 2 (OIDC flow may not have completed)"
-fi
+RESPONSE=$(incurl -D - -b /tmp/jar "${APP}/oidc-app/other-page" || true)
+assert_contains "Authenticated response" "${RESPONSE}" "allowed=true"
+assert_contains "Expiring token refreshed into a new session cookie" "${RESPONSE}" "set-cookie: sso_session="
 
-# --- Test 4: Claim extraction ---
+# --- Test 4: Group check ---
 echo ""
-echo "Test 4: Claim extraction"
-if [[ -f "${COOKIE_JAR}" ]] && grep -q "sso_session" "${COOKIE_JAR}" 2>/dev/null; then
-    RESPONSE=$(curl -s -b "${COOKIE_JAR}" "${BASE_URL}/oidc-app" 2>/dev/null)
-    assert_contains "Response contains email" "${RESPONSE}" "email"
-else
-    echo "  SKIP: No session cookie"
-fi
+echo "Test 4: Signed-in user outside the required group gets 403"
+CODE=$(incurl -o /dev/null -w '%{http_code}' -b /tmp/jar "${APP}/admin-app" || echo "000")
+assert_eq "HTTP status is 403" "403" "${CODE}"
+
+echo "Test 4a: Signed-in user in one of the required groups is admitted"
+RESPONSE=$(incurl -b /tmp/jar "${APP}/users-app" || true)
+assert_contains "Group member admitted" "${RESPONSE}" "allowed=true"
+assert_contains "Groups claim extracted" "${RESPONSE}" "groups=admin,users"
+
+# --- Test 4b: Forged session rejected ---
+echo ""
+echo "Test 4b: Forged session cookie starts a new sign-in"
+CODE=$(incurl -o /dev/null -w '%{http_code}' -H 'Cookie: sso_session=AAAA' "${APP}/oidc-app" || echo "000")
+assert_eq "HTTP status is 302" "302" "${CODE}"
 
 # --- Test 5: Fail-closed (OIDC IdP down) ---
 echo ""

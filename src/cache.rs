@@ -10,7 +10,7 @@ use crate::util::now_secs;
 #[derive(Debug, Clone)]
 pub struct CachedProvider {
     pub config: ProviderConfig,
-    pub oidc_discovery_json: Option<String>,
+    pub oidc_metadata: Option<openidconnect::core::CoreProviderMetadata>,
     pub oidc_discovery_fetched_at: Option<u64>,
     pub consecutive_failures: u32,
     pub last_failure_at: Option<u64>,
@@ -20,7 +20,7 @@ impl CachedProvider {
     pub fn new(config: ProviderConfig) -> Self {
         Self {
             config,
-            oidc_discovery_json: None,
+            oidc_metadata: None,
             oidc_discovery_fetched_at: None,
             consecutive_failures: 0,
             last_failure_at: None,

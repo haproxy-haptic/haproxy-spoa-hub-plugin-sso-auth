@@ -18,40 +18,30 @@ data:
     frontend http
         bind *:8080
         filter spoe engine sso-auth config /etc/haproxy/spoe-sso-auth.conf
-        option http-buffer-request
-        tcp-request inspect-delay 5s
 
-        # Map routes to providers
-        http-request set-var(txn.sso_provider) str(mock-oidc) if { path_beg /oidc-app }
+        # /oidc-app and /admin-app: provider from the plugin params.
+        # /legacy-app: provider_config from a map, as before v0.4.0.
+        http-request set-var(txn.sso_provider) str(mock-oidc) if { path_beg /oidc-app } || { path_beg /admin-app } || { path_beg /users-app }
+        http-request set-var(txn.sso_groups) str(admins) if { path_beg /admin-app }
+        http-request set-var(txn.sso_groups) str(users) if { path_beg /users-app }
+        http-request set-var(txn.sso_provider) str(legacy) if { path_beg /legacy-app }
+        http-request set-var(txn.sso_provider_config) var(txn.sso_provider),map_str(/etc/haproxy/maps/sso-providers.map) if { var(txn.sso_provider) -m str legacy }
 
-        # Load provider config from single map file
-        http-request set-var(txn.sso_provider_config) var(txn.sso_provider),map_str(/etc/haproxy/maps/sso-providers.map)
-
-        # Detect logout
-        http-request set-var(txn.is_logout) str(true) if { path_end /logout }
-
-        # Trigger SPOE
         http-request send-spoe-group sso-auth check-sso-auth-group if { var(txn.sso_provider) -m found }
 
-        # Handle auth decisions
         http-request redirect location %[var(txn.spoe.sso_auth.redirect_url)] if { var(txn.spoe.sso_auth.action) -m str redirect }
-        http-request deny deny_status 401 if { var(txn.spoe.sso_auth.action) -m str deny }
+        http-request deny deny_status 403 if { var(txn.spoe.sso_auth.action) -m str forbidden }
+        http-request deny deny_status 401 if { var(txn.sso_provider) -m found } !{ var(txn.spoe.sso_auth.allowed) -m bool }
 
-        # Set cookies (using convenience headers from the plugin)
-        http-response set-header Set-Cookie %[var(txn.spoe.sso_auth.set_cookie_header)] if { var(txn.spoe.sso_auth.set_cookie_header) -m found }
-        http-response add-header Set-Cookie %[var(txn.spoe.sso_auth.set_auth_state_header)] if { var(txn.spoe.sso_auth.set_auth_state_header) -m found }
-        http-response set-header Set-Cookie %[var(txn.spoe.sso_auth.clear_cookie_header)] if { var(txn.spoe.sso_auth.clear_cookie_header) -m found }
+        # http-after-response also covers the redirects HAProxy generates.
+        http-after-response add-header Set-Cookie %[var(txn.spoe.sso_auth.set_auth_state_header)] if { var(txn.spoe.sso_auth.set_auth_state_header) -m found }
+        http-after-response add-header Set-Cookie %[var(txn.spoe.sso_auth.set_cookie_header)] if { var(txn.spoe.sso_auth.set_cookie_header) -m found }
+        http-after-response add-header Set-Cookie %[var(txn.spoe.sso_auth.set_cookie_header_1)] if { var(txn.spoe.sso_auth.set_cookie_header_1) -m found }
+        http-after-response add-header Set-Cookie %[var(txn.spoe.sso_auth.set_cookie_header_2)] if { var(txn.spoe.sso_auth.set_cookie_header_2) -m found }
 
-        # Forward claims
-        http-request set-header X-Auth-Email %[var(txn.spoe.sso_auth.email)] if { var(txn.spoe.sso_auth.email) -m found }
-        http-request set-header X-Auth-Groups %[var(txn.spoe.sso_auth.groups)] if { var(txn.spoe.sso_auth.groups) -m found }
+        http-request return status 200 content-type text/plain lf-string "allowed=true\nemail=%[var(txn.spoe.sso_auth.email)]\ngroups=%[var(txn.spoe.sso_auth.groups)]\ntoken=%[var(txn.spoe.sso_auth.token)]\n" if { var(txn.spoe.sso_auth.allowed) -m bool }
 
-        # Return 200 with info for authenticated requests
-        http-request return status 200 content-type text/plain string "allowed=true\nemail=%[var(txn.spoe.sso_auth.email)]\ngroups=%[var(txn.spoe.sso_auth.groups)]\n" if { var(txn.spoe.sso_auth.allowed) -m bool }
-
-        # Route mock-oidc requests
         use_backend mock-oidc if { path_beg /mock-oidc }
-
         default_backend app
 
     backend app
@@ -77,7 +67,7 @@ data:
         use-backend spoa-hub-backend
 
     spoe-message check-sso-auth
-        args provider=var(txn.sso_provider) provider_config=var(txn.sso_provider_config) cookie=req.cook(sso_session) auth_state_cookie=req.cook(sso_auth_state) request_path=path request_method=method callback_code=url_param(code) callback_state=url_param(state) is_logout=var(txn.is_logout)
+        args provider=var(txn.sso_provider) provider_config=var(txn.sso_provider_config) allowed_groups=var(txn.sso_groups) cookie=req.cook(sso_session) cookie_1=req.cook(sso_session_1) cookie_2=req.cook(sso_session_2) auth_state_cookie=req.cook(sso_auth_state) request_path=pathq request_host=req.hdr(host) callback_code=url_param(code) callback_state=url_param(state)
 
     spoe-group check-sso-auth-group
         messages check-sso-auth
@@ -105,10 +95,31 @@ data:
 
     [plugins.params]
     cookie_secret_1 = "e2e-test-secret-at-least-16-chars"
-    cookie_domain = "localhost"
     cookie_secure = false
     default_timeout_ms = 5000
     max_providers = 16
+    # Longer than the mock's one-hour tokens: every signed-in request refreshes.
+    clock_skew_secs = 7200
+
+    [plugins.params.providers.mock-oidc]
+    protocol = "oidc"
+    client_id = "test-client"
+    client_secret_file = "/secrets/client-secret"
+    cookie_secret_file = "/secrets/cookie-secret"
+    discovery_url = "http://mock-oidc:8080/default/.well-known/openid-configuration"
+    redirect_uri = "http://haproxy-hub:8080/oidc-app/callback"
+    scopes = ["openid", "email"]
+    extract_claims = ["email", "name"]
+    pass_token = "id_token"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: provider-secrets
+  namespace: e2e-sso-auth
+stringData:
+  client-secret: test-secret
+  cookie-secret: e2e-provider-cookie-secret
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -117,7 +128,7 @@ metadata:
   namespace: e2e-sso-auth
 data:
   sso-providers.map: |
-    mock-oidc {"protocol":"oidc","client_id":"test-client","client_secret":"test-secret","discovery_url":"http://mock-oidc:8080/default/.well-known/openid-configuration","redirect_uri":"__REDIRECT_URI__","extract_claims":"email,name,groups"}
+    legacy {"protocol":"oidc","client_id":"test-client","client_secret":"test-secret","discovery_url":"http://mock-oidc:8080/default/.well-known/openid-configuration","redirect_uri":"http://haproxy-hub:8080/legacy-app/callback","extract_claims":"email,name,groups"}
 ---
 apiVersion: v1
 kind: ConfigMap

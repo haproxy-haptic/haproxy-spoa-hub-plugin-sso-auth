@@ -1,67 +1,88 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use openidconnect::core::{CoreProviderMetadata, CoreResponseType};
+use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType};
 use openidconnect::{
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
-    OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope,
+    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointMaybeSet,
+    EndpointNotSet, EndpointSet, IssuerUrl, JsonWebKeySet, Nonce, OAuth2TokenResponse,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope,
 };
 
-use crate::action::AuthAction;
+use crate::action::{AuthAction, lacks_required_group};
 use crate::auth_state::AuthState;
 use crate::cache::{CachedProvider, ProviderCache};
 use crate::config::PluginConfig;
 use crate::metrics::AuthMetrics;
-use crate::provider::ProviderConfig;
+use crate::provider::{PassToken, ProviderConfig};
 use crate::session::{SessionProtocol, SsoSession};
 use crate::urlencoding;
 use crate::util::now_secs;
 
+type OidcClient = CoreClient<
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointMaybeSet,
+    EndpointMaybeSet,
+>;
+
+/// The per-request inputs of an OIDC decision.
+#[derive(Debug, Default)]
+pub struct OidcRequest<'a> {
+    pub cookie: Option<&'a str>,
+    pub auth_state_cookie: Option<&'a str>,
+    pub callback_code: Option<&'a str>,
+    pub callback_state: Option<&'a str>,
+    pub is_logout: bool,
+    /// Path and query of the request.
+    pub request_path: Option<&'a str>,
+    pub allowed_groups: &'a [&'a str],
+    /// Host header, completing a path-only `redirect_uri`.
+    pub host: Option<&'a str>,
+}
+
 /// Handle an OIDC request: redirect to identity provider, process callback, or
 /// validate session.
-#[allow(clippy::too_many_arguments)]
 pub fn handle_oidc_request(
     provider: &ProviderConfig,
     cache: &ProviderCache,
     config: &PluginConfig,
     metrics: &AuthMetrics,
-    cookie: Option<&str>,
-    auth_state_cookie: Option<&str>,
-    callback_code: Option<&str>,
-    callback_state: Option<&str>,
-    is_logout: bool,
-    request_path: Option<&str>,
+    req: &OidcRequest,
 ) -> AuthAction {
-    // Logout.
-    if is_logout {
-        if let Some(cookie_val) = cookie {
-            if SsoSession::decrypt(cookie_val, config).is_ok() {
-                metrics.inc_logout(&provider.name);
-                return handle_oidc_logout(provider);
-            }
-        }
+    let session = SsoSession::decrypt_for(req.cookie, config, provider);
+
+    if req.is_logout && session.is_some() {
+        metrics.inc_logout(&provider.name);
+        return handle_oidc_logout(provider);
     }
 
-    // Valid session cookie → allow.
-    if let Some(cookie_val) = cookie {
-        if let Ok(session) = SsoSession::decrypt(cookie_val, config) {
-            if !session.is_expired() {
-                return AuthAction::Allow {
-                    claims: session.claims.clone(),
-                    set_cookie: None,
-                };
-            }
-            // Expired but has refresh token → try refresh.
-            if let Some(ref refresh_tok) = session.refresh_token {
-                match handle_token_refresh(provider, cache, config, metrics, refresh_tok) {
-                    Ok(action) => return action,
-                    Err(e) => {
-                        log::warn!(
-                            "OIDC token refresh failed for provider {}: {e}",
-                            provider.name
-                        );
-                        metrics.inc_token_refresh_failure(&provider.name);
-                    }
+    // `code` and `state` only mean a callback on the redirect_uri path; on
+    // any other path they belong to the application.
+    let callback = req
+        .request_path
+        .is_some_and(|p| p.split('?').next() == Some(provider.redirect_path()))
+        .then_some(req.callback_code.zip(req.callback_state))
+        .flatten();
+
+    if let (Some(session), None) = (session, callback) {
+        if !session.is_expired() && !needs_token_refresh(provider, config, &session) {
+            return allow_session(provider, session, None, req.allowed_groups);
+        }
+        if let Some(ref refresh_tok) = session.refresh_token {
+            match refresh_session(provider, cache, config, &session, refresh_tok, req.host) {
+                Ok((renewed, cookie)) => {
+                    log::info!("OIDC token refresh success for provider {}", provider.name);
+                    metrics.inc_token_refresh(&provider.name);
+                    return allow_session(provider, renewed, Some(cookie), req.allowed_groups);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "OIDC token refresh failed for provider {}: {e}",
+                        provider.name
+                    );
+                    metrics.inc_token_refresh_failure(&provider.name);
                 }
             }
         }
@@ -79,10 +100,9 @@ pub fn handle_oidc_request(
         }
     }
 
-    // Resolve discovery metadata.
     let http_client = oidc_http_client(provider, config);
-    let metadata = match resolve_metadata(provider, cache, config, &http_client) {
-        Ok(m) => m,
+    let client = match build_client(provider, cache, config, &http_client, req.host) {
+        Ok(c) => c,
         Err(e) => {
             metrics.inc_idp_error(&provider.name);
             cache.update(&provider.name, CachedProvider::record_failure);
@@ -90,29 +110,11 @@ pub fn handle_oidc_request(
         }
     };
 
-    let client_id = ClientId::new(provider.client_id.clone());
-    let client_secret = provider
-        .client_secret
-        .as_ref()
-        .map(|s| ClientSecret::new(s.clone()));
-    let redirect_uri = match RedirectUrl::new(provider.redirect_uri.clone()) {
-        Ok(u) => u,
-        Err(e) => {
-            return AuthAction::Deny {
-                error: format!("invalid redirect_uri: {e}"),
-            };
-        }
-    };
-
-    let client =
-        openidconnect::core::CoreClient::from_provider_metadata(metadata, client_id, client_secret)
-            .set_redirect_uri(redirect_uri);
-
-    // OIDC callback (has code + state + auth_state_cookie).
-    if let (Some(code), Some(state)) = (callback_code, callback_state) {
+    if let Some((code, state)) = callback {
         // Decrypt the auth state cookie to recover PKCE verifier, nonce, CSRF.
-        let Some(auth_state) =
-            auth_state_cookie.and_then(|c| AuthState::decrypt(c, config.active_secret()).ok())
+        let Some(auth_state) = req
+            .auth_state_cookie
+            .and_then(|c| AuthState::decrypt(c, config.active_secret(provider)).ok())
         else {
             metrics.inc_auth_failure(&provider.name);
             return AuthAction::Deny {
@@ -120,7 +122,6 @@ pub fn handle_oidc_request(
             };
         };
 
-        // Validate CSRF state.
         if state != auth_state.csrf_state {
             metrics.inc_auth_failure(&provider.name);
             return AuthAction::Deny {
@@ -149,7 +150,8 @@ pub fn handle_oidc_request(
         Nonce::new_random,
     );
 
-    for scope in &provider.scopes {
+    // The client always requests openid.
+    for scope in provider.scopes.iter().filter(|s| *s != "openid") {
         auth_req = auth_req.add_scope(Scope::new(scope.clone()));
     }
     auth_req = auth_req.set_pkce_challenge(pkce_challenge);
@@ -161,10 +163,10 @@ pub fn handle_oidc_request(
         pkce_verifier: pkce_verifier.secret().clone(),
         csrf_state: csrf_state.secret().clone(),
         nonce: nonce.secret().clone(),
-        original_path: request_path.map(String::from),
+        original_path: req.request_path.map(String::from),
     };
 
-    match auth_state.encrypt(config.active_secret()) {
+    match auth_state.encrypt(config.active_secret(provider)) {
         Ok(state_cookie) => AuthAction::Redirect {
             redirect_url: authorize_url.to_string(),
             set_auth_state_cookie: Some(state_cookie),
@@ -175,16 +177,73 @@ pub fn handle_oidc_request(
     }
 }
 
+fn needs_token_refresh(
+    provider: &ProviderConfig,
+    config: &PluginConfig,
+    session: &SsoSession,
+) -> bool {
+    provider.pass_token.is_some() && session.token_expires_at <= now_secs() + config.clock_skew_secs
+}
+
+fn allow_session(
+    provider: &ProviderConfig,
+    session: SsoSession,
+    set_cookie: Option<String>,
+    allowed_groups: &[&str],
+) -> AuthAction {
+    if lacks_required_group(&session.claims, &provider.groups_claim, allowed_groups) {
+        return AuthAction::Forbidden {
+            error: "not a member of a required group".into(),
+        };
+    }
+    AuthAction::Allow {
+        claims: session.claims,
+        set_cookie,
+        token: provider.pass_token.and(session.token),
+    }
+}
+
+/// Where to send the browser after the callback: the recorded path when it
+/// is local, `/` otherwise. `//host` and `/\host` are protocol-relative URLs
+/// in browsers and would make the callback an open redirect.
+fn safe_return_path(original: Option<&str>) -> String {
+    match original {
+        Some(p)
+            if p.starts_with('/')
+                && !p.starts_with("//")
+                && !p.starts_with("/\\")
+                && !p.chars().any(char::is_control) =>
+        {
+            p.to_owned()
+        }
+        _ => "/".to_owned(),
+    }
+}
+
+fn build_client(
+    provider: &ProviderConfig,
+    cache: &ProviderCache,
+    config: &PluginConfig,
+    http_client: &openidconnect::ureq::Agent,
+    host: Option<&str>,
+) -> Result<OidcClient, String> {
+    let metadata = resolve_metadata(provider, cache, config, http_client)?;
+    let client_id = ClientId::new(provider.client_id.clone());
+    let client_secret = provider
+        .client_secret
+        .as_ref()
+        .map(|s| ClientSecret::new(s.clone()));
+    let redirect_uri = RedirectUrl::new(provider.redirect_uri_for(host)?)
+        .map_err(|e| format!("invalid redirect_uri: {e}"))?;
+    Ok(
+        CoreClient::from_provider_metadata(metadata, client_id, client_secret)
+            .set_redirect_uri(redirect_uri),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_callback_with_client(
-    client: &openidconnect::core::CoreClient<
-        openidconnect::EndpointSet,
-        openidconnect::EndpointNotSet,
-        openidconnect::EndpointNotSet,
-        openidconnect::EndpointNotSet,
-        openidconnect::EndpointMaybeSet,
-        openidconnect::EndpointMaybeSet,
-    >,
+    client: &OidcClient,
     provider: &ProviderConfig,
     config: &PluginConfig,
     metrics: &AuthMetrics,
@@ -249,18 +308,31 @@ fn handle_callback_with_client(
         }
     };
 
-    let extracted = extract_claims_from_verified(claims, &provider.extract_claims);
-
+    let extracted =
+        extract_claims_from_verified(claims, &id_token.to_string(), &provider.extract_claims);
     let refresh_token = token_response.refresh_token().map(|t| t.secret().clone());
+    let (token, token_expires_at) = pass_token(
+        provider,
+        &token_response,
+        Some((id_token.to_string(), claims.expiration().timestamp())),
+    );
 
-    let session = create_session(provider, config, extracted.clone(), refresh_token);
-    match session.encrypt(config) {
+    let session = create_session(
+        provider,
+        config,
+        extracted.clone(),
+        refresh_token,
+        token,
+        token_expires_at,
+    );
+    match session.seal(config, provider) {
         Ok(cookie) => {
             log::info!("OIDC auth success for provider {}", provider.name);
             metrics.inc_auth_success(&provider.name);
             AuthAction::Callback {
                 set_cookie: cookie,
                 claims: extracted,
+                redirect_url: Some(safe_return_path(auth_state.original_path.as_deref())),
             }
         }
         Err(e) => {
@@ -272,27 +344,40 @@ fn handle_callback_with_client(
     }
 }
 
-fn handle_token_refresh(
+/// The token the provider forwards and its expiry. `id_token` is the
+/// verified ID token and its `exp`; an access token without `expires_in`
+/// lives as long as the session.
+fn pass_token(
+    provider: &ProviderConfig,
+    token_response: &openidconnect::core::CoreTokenResponse,
+    id_token: Option<(String, i64)>,
+) -> (Option<String>, u64) {
+    match provider.pass_token {
+        None => (None, 0),
+        Some(PassToken::IdToken) => id_token.map_or((None, 0), |(jwt, exp)| {
+            (Some(jwt), u64::try_from(exp).unwrap_or(0))
+        }),
+        Some(PassToken::AccessToken) => (
+            Some(token_response.access_token().secret().clone()),
+            token_response
+                .expires_in()
+                .map_or(u64::MAX, |d| now_secs() + d.as_secs()),
+        ),
+    }
+}
+
+/// Exchange the refresh token for new tokens. The renewed session keeps the
+/// old claims unless the provider returns a new ID token.
+fn refresh_session(
     provider: &ProviderConfig,
     cache: &ProviderCache,
     config: &PluginConfig,
-    metrics: &AuthMetrics,
+    old: &SsoSession,
     refresh_token_str: &str,
-) -> Result<AuthAction, String> {
+    host: Option<&str>,
+) -> Result<(SsoSession, String), String> {
     let http_client = oidc_http_client(provider, config);
-    let metadata = resolve_metadata(provider, cache, config, &http_client)?;
-
-    let client_id = ClientId::new(provider.client_id.clone());
-    let client_secret = provider
-        .client_secret
-        .as_ref()
-        .map(|s| ClientSecret::new(s.clone()));
-    let redirect_uri = RedirectUrl::new(provider.redirect_uri.clone())
-        .map_err(|e| format!("invalid redirect_uri: {e}"))?;
-
-    let client =
-        openidconnect::core::CoreClient::from_provider_metadata(metadata, client_id, client_secret)
-            .set_redirect_uri(redirect_uri);
+    let client = build_client(provider, cache, config, &http_client, host)?;
 
     let refresh_token = RefreshToken::new(refresh_token_str.to_owned());
     let token_response = client
@@ -303,16 +388,24 @@ fn handle_token_refresh(
 
     cache.update(&provider.name, CachedProvider::record_success);
 
-    // Extract claims from new ID token if present.
-    let mut extracted = HashMap::new();
+    let mut claims = old.claims.clone();
+    let mut verified_id_token = None;
     if let Some(id_token) = token_response.extra_fields().id_token() {
         let verifier = client.id_token_verifier();
-        // Refresh tokens don't use nonce — skip nonce verification per OIDC spec §12.2.
-        if let Ok(claims) = id_token.claims(&verifier, |_: Option<&Nonce>| -> Result<(), String> {
-            Ok(())
-        }) {
-            extracted = extract_claims_from_verified(claims, &provider.extract_claims);
-        }
+        // Refreshed ID tokens carry no nonce (OIDC Core §12.2).
+        let verified = id_token
+            .claims(&verifier, |_: Option<&Nonce>| -> Result<(), String> {
+                Ok(())
+            })
+            .map_err(|e| format!("refreshed ID token invalid: {e}"))?;
+        claims =
+            extract_claims_from_verified(verified, &id_token.to_string(), &provider.extract_claims);
+        verified_id_token = Some((id_token.to_string(), verified.expiration().timestamp()));
+    }
+
+    let (token, token_expires_at) = pass_token(provider, &token_response, verified_id_token);
+    if provider.pass_token.is_some() && token.is_none() {
+        return Err("refresh response has no ID token to forward".into());
     }
 
     let new_refresh = token_response
@@ -320,17 +413,16 @@ fn handle_token_refresh(
         .map(|t| t.secret().clone())
         .or_else(|| Some(refresh_token_str.to_owned()));
 
-    let session = create_session(provider, config, extracted.clone(), new_refresh);
-    let cookie = session
-        .encrypt(config)
-        .map_err(|e| format!("encrypt: {e}"))?;
-
-    log::info!("OIDC token refresh success for provider {}", provider.name);
-    metrics.inc_token_refresh(&provider.name);
-    Ok(AuthAction::Allow {
-        claims: extracted,
-        set_cookie: Some(cookie),
-    })
+    let session = create_session(
+        provider,
+        config,
+        claims,
+        new_refresh,
+        token,
+        token_expires_at,
+    );
+    let cookie = session.seal(config, provider)?;
+    Ok((session, cookie))
 }
 
 fn resolve_metadata(
@@ -339,49 +431,42 @@ fn resolve_metadata(
     config: &PluginConfig,
     http_client: &openidconnect::ureq::Agent,
 ) -> Result<CoreProviderMetadata, String> {
-    let Some(discovery_url) = provider.discovery_url.as_deref() else {
+    let cached = cache.get(&provider.name);
+    if let Some(metadata) = cached
+        .filter(|c| !c.is_discovery_stale(config.discovery_ttl_secs))
+        .and_then(|c| c.oidc_metadata)
+    {
+        return Ok(metadata);
+    }
+
+    let metadata = if let Some(discovery_url) = provider.discovery_url.as_deref() {
+        let issuer_str = discovery_url
+            .trim_end_matches("/.well-known/openid-configuration")
+            .trim_end_matches("/.well-known/openid-configuration/");
+        let issuer_url = IssuerUrl::new(issuer_str.to_owned())
+            .map_err(|e| format!("invalid issuer URL: {e}"))?;
+        CoreProviderMetadata::discover(&issuer_url, http_client)
+            .map_err(|e| format!("OIDC discovery failed: {e}"))?
+    } else {
         // FR-003: fallback to manual endpoints.
-        return build_metadata_from_manual_endpoints(provider);
+        let metadata = build_metadata_from_manual_endpoints(provider)?;
+        let jwks = JsonWebKeySet::fetch(metadata.jwks_uri(), http_client)
+            .map_err(|e| format!("fetch JWKS: {e}"))?;
+        metadata.set_jwks(jwks)
     };
 
-    // Check cache.
-    let cached = cache.get(&provider.name);
-    let is_stale = cached
-        .as_ref()
-        .is_none_or(|c| c.is_discovery_stale(config.discovery_ttl_secs));
-
-    if !is_stale {
-        if let Some(json) = cached.and_then(|c| c.oidc_discovery_json.clone()) {
-            return serde_json::from_str::<CoreProviderMetadata>(&json)
-                .map_err(|e| format!("parse cached discovery: {e}"));
-        }
-    }
-
-    // Fetch fresh.
-    let issuer_str = discovery_url
-        .trim_end_matches("/.well-known/openid-configuration")
-        .trim_end_matches("/.well-known/openid-configuration/");
-
-    let issuer_url =
-        IssuerUrl::new(issuer_str.to_owned()).map_err(|e| format!("invalid issuer URL: {e}"))?;
-
-    let metadata = CoreProviderMetadata::discover(&issuer_url, http_client)
-        .map_err(|e| format!("OIDC discovery failed: {e}"))?;
-
-    // Cache it.
-    if let Ok(json) = serde_json::to_string(&metadata) {
-        let now = now_secs();
-        cache.update(&provider.name, |entry| {
-            entry.oidc_discovery_json = Some(json);
-            entry.oidc_discovery_fetched_at = Some(now);
-        });
-    }
+    // Cached as the value, not JSON: the signing keys aren't serialized, and a
+    // metadata rebuilt from JSON fails every signature check.
+    let now = now_secs();
+    let to_cache = metadata.clone();
+    cache.update(&provider.name, |entry| {
+        entry.oidc_metadata = Some(to_cache);
+        entry.oidc_discovery_fetched_at = Some(now);
+    });
 
     Ok(metadata)
 }
 
-/// FR-003: Build provider metadata from manual endpoint configuration
-/// when `discovery_url` is not provided.
 /// FR-003: Build provider metadata from manual endpoint configuration
 /// when `discovery_url` is not provided.
 fn build_metadata_from_manual_endpoints(
@@ -425,8 +510,12 @@ fn build_metadata_from_manual_endpoints(
 }
 
 /// Extract standard + configured claims from a verified ID token.
+/// `jwt` is the ID token `claims` were verified from. Configured claims are
+/// read from its payload: `CoreIdTokenClaims` drops non-standard claims such
+/// as `groups` when it parses the token.
 fn extract_claims_from_verified(
     claims: &openidconnect::core::CoreIdTokenClaims,
+    jwt: &str,
     extract_claims: &[String],
 ) -> HashMap<String, String> {
     let mut extracted = HashMap::new();
@@ -440,22 +529,26 @@ fn extract_claims_from_verified(
         }
     }
 
-    // Extract additional configured claims from the serialized token.
-    if !extract_claims.is_empty() {
-        if let Ok(raw_json) = serde_json::to_string(claims) {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw_json) {
-                for claim_name in extract_claims {
-                    if extracted.contains_key(claim_name) {
-                        continue;
-                    }
-                    if let Some(val) = json_value_to_string(parsed.get(claim_name)) {
-                        extracted.insert(claim_name.clone(), val);
-                    }
-                }
+    if let Some(payload) = jwt_payload(jwt) {
+        for claim_name in extract_claims {
+            if extracted.contains_key(claim_name) {
+                continue;
+            }
+            if let Some(val) = json_value_to_string(payload.get(claim_name)) {
+                extracted.insert(claim_name.clone(), val);
             }
         }
     }
     extracted
+}
+
+fn jwt_payload(jwt: &str) -> Option<serde_json::Value> {
+    use base64::Engine;
+    let segment = jwt.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(segment.trim_end_matches('='))
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Convert a JSON value to a string representation.
@@ -504,6 +597,8 @@ fn create_session(
     config: &PluginConfig,
     claims: HashMap<String, String>,
     refresh_token: Option<String>,
+    token: Option<String>,
+    token_expires_at: u64,
 ) -> SsoSession {
     let expires_at = now_secs() + config.cookie_lifetime_secs;
     SsoSession {
@@ -515,6 +610,8 @@ fn create_session(
         refresh_token,
         session_index: None,
         name_id: None,
+        token,
+        token_expires_at,
     }
 }
 
@@ -548,5 +645,31 @@ pub fn apply_failure_policy(config: &PluginConfig, provider_name: &str, error: &
             error: error.to_owned(),
             allow: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jwt_payload_reads_custom_claims() {
+        // {"alg":"none"}.{"sub":"u","groups":["a","b"]}.
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1IiwiZ3JvdXBzIjpbImEiLCJiIl19.";
+        let payload = jwt_payload(jwt).unwrap();
+        assert_eq!(
+            json_value_to_string(payload.get("groups")).as_deref(),
+            Some("a,b")
+        );
+        assert!(jwt_payload("not-a-jwt").is_none());
+    }
+
+    #[test]
+    fn safe_return_path_blocks_open_redirects() {
+        assert_eq!(safe_return_path(Some("/app?x=1")), "/app?x=1");
+        assert_eq!(safe_return_path(Some("//evil.com/")), "/");
+        assert_eq!(safe_return_path(Some("/\\evil.com")), "/");
+        assert_eq!(safe_return_path(Some("https://evil.com")), "/");
+        assert_eq!(safe_return_path(None), "/");
     }
 }

@@ -5,7 +5,7 @@ use samael::metadata::{Endpoint, EntityDescriptor, IdpSsoDescriptor, KeyDescript
 use samael::service_provider::ServiceProvider;
 use samael::traits::ToXml;
 
-use crate::action::AuthAction;
+use crate::action::{AuthAction, lacks_required_group};
 use crate::config::PluginConfig;
 use crate::metrics::AuthMetrics;
 use crate::oidc::apply_failure_policy;
@@ -16,6 +16,7 @@ use crate::util::now_secs;
 
 /// Handle a SAML request: redirect with `AuthnRequest`, process
 /// callback, or validate session.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_saml_request(
     provider: &ProviderConfig,
     config: &PluginConfig,
@@ -24,6 +25,7 @@ pub fn handle_saml_request(
     auth_state_cookie: Option<&str>,
     callback_saml_response: Option<&str>,
     is_logout: bool,
+    allowed_groups: &[&str],
 ) -> AuthAction {
     // FR-005: Enforce idp_cert as required for SAML.
     if provider.idp_cert.is_none() {
@@ -33,28 +35,30 @@ pub fn handle_saml_request(
                 .into(),
         };
     }
+    let session = SsoSession::decrypt_for(cookie, config, provider);
+
     // Logout.
     if is_logout {
-        if let Some(cookie_val) = cookie {
-            if let Ok(session) = SsoSession::decrypt(cookie_val, config) {
-                metrics.inc_logout(&provider.name);
-                return handle_saml_logout(provider, &session);
-            }
+        if let Some(ref session) = session {
+            metrics.inc_logout(&provider.name);
+            return handle_saml_logout(provider, session);
         }
         return build_saml_redirect(provider, config);
     }
 
-    // Valid session cookie → allow.
-    if let Some(cookie_val) = cookie {
-        if let Ok(session) = SsoSession::decrypt(cookie_val, config) {
-            if !session.is_expired() {
-                return AuthAction::Allow {
-                    claims: session.claims.clone(),
-                    set_cookie: None,
-                };
-            }
-            // SAML has no refresh tokens — must re-authenticate.
+    // Valid session cookie → allow. SAML has no refresh tokens, so an
+    // expired session must re-authenticate.
+    if let Some(session) = session.filter(|s| !s.is_expired()) {
+        if lacks_required_group(&session.claims, &provider.groups_claim, allowed_groups) {
+            return AuthAction::Forbidden {
+                error: "not a member of a required group".into(),
+            };
         }
+        return AuthAction::Allow {
+            claims: session.claims,
+            set_cookie: None,
+            token: None,
+        };
     }
 
     // SAML callback (has SAMLResponse).
@@ -62,7 +66,9 @@ pub fn handle_saml_request(
         // Recover the AuthnRequest ID from the auth state cookie for
         // InResponseTo validation.
         let request_id = auth_state_cookie
-            .and_then(|c| crate::auth_state::AuthState::decrypt(c, config.active_secret()).ok())
+            .and_then(|c| {
+                crate::auth_state::AuthState::decrypt(c, config.active_secret(provider)).ok()
+            })
             .map(|s| s.csrf_state); // request ID is stored in csrf_state field
         return handle_saml_callback(
             provider,
@@ -178,7 +184,7 @@ fn build_saml_redirect(provider: &ProviderConfig, config: &PluginConfig) -> Auth
                 nonce: String::new(),         // unused for SAML
                 original_path: None,
             };
-            let state_cookie = auth_state.encrypt(config.active_secret()).ok();
+            let state_cookie = auth_state.encrypt(config.active_secret(provider)).ok();
             AuthAction::Redirect {
                 redirect_url: url,
                 set_auth_state_cookie: state_cookie,
@@ -232,13 +238,14 @@ fn handle_saml_callback(
         Ok((claims, session_index, name_id)) => {
             let session =
                 create_saml_session(provider, config, claims.clone(), session_index, name_id);
-            match session.encrypt(config) {
+            match session.seal(config, provider) {
                 Ok(cookie) => {
                     log::info!("SAML auth success for provider {}", provider.name);
                     metrics.inc_auth_success(&provider.name);
                     AuthAction::Callback {
                         set_cookie: cookie,
                         claims,
+                        redirect_url: None,
                     }
                 }
                 Err(e) => {
@@ -418,6 +425,8 @@ fn create_saml_session(
         refresh_token: None,
         session_index,
         name_id,
+        token: None,
+        token_expires_at: 0,
     }
 }
 

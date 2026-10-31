@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Providers can be defined in the params as `[providers.<name>]`; a request naming one needs no `provider_config` arg. `client_secret_file`, `cookie_secret_file`, `cookie_secret_1_file` and `cookie_secret_2_file` read secrets from files at init.
+- Per-provider `cookie_secret`; the global `cookie_secret_1` is optional when every provider has one, and `cookie_domain` is optional (host-only cookies).
+- `allowed_groups` SPOE arg and `groups_claim` provider field: a signed-in user in none of the groups gets `action=forbidden` (403).
+- `pass_token` (`id_token` or `access_token`): the session keeps the token, returns it as `token`, and refreshes it before it expires; `pass_token=true` is set so HAProxy can drop a client-supplied `Authorization` header.
+- `redirect_uri` may be a path; the `request_host` arg completes it, so one provider serves every host of a route.
+- A provider whose secret file can't be read at init fails only its own requests (503) and retries the read until it succeeds.
+- Sessions longer than one cookie are split into `sso_session`, `sso_session_1` and `sso_session_2` (`cookie_1`/`cookie_2` args, `set_cookie_header_1`/`_2` variables).
+
 ### Changed
+
+- **Session cookies use format version 2** (compressed, with token fields). Existing sessions sign in again once.
+- After the OIDC callback the browser is redirected to the page that started the sign-in instead of the callback request reaching the backend.
+- `code`/`state` query parameters only count as a callback on the `redirect_uri` path.
+- A session only authenticates requests for the provider that created it.
+- A refresh that returns no ID token keeps the session's claims; an invalid refreshed ID token fails the refresh.
+- An unresolvable provider configuration denies with 503 even with `fail_open`.
+
+### Fixed
+
+- OIDC callbacks failed ID token signature checks whenever discovery came from the cache, because the cached metadata lost the signing keys; providers configured with manual endpoints never fetched their keys at all.
+- Configured claims outside the OIDC standard set, such as `groups`, were never extracted.
+- The authorization request listed the `openid` scope twice.
 
 - Development and releases moved to GitHub (`https://github.com/haproxy-haptic/haproxy-spoa-hub-plugin-sso-auth`); GitLab is a read-only mirror.
 - Bumped `aes-gcm` `0.10` → `0.11` (new `aead` 0.6 / `hybrid-array` backend). Cookie encryption is unchanged on the wire — existing session and auth-state cookies keep decrypting across the upgrade.
