@@ -321,7 +321,7 @@ mod tests {
     fn provider_secret_and_binding_isolate_providers() {
         let config = test_config();
         let mut own = test_provider();
-        own.cookie_secret = Some("tenant-a-secret-16-chars-min".into());
+        own.cookie_secret = Some(crate::util::Redacted("tenant-a-secret-16-chars-min".into()));
         let cookie = test_session().encrypt(&config, &own).unwrap();
 
         // The global keys can't read a cookie sealed with a provider's own key.

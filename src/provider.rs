@@ -2,6 +2,8 @@ use haproxy_spoa_hub_plugin_api::SpoeMessage;
 use std::fmt;
 use std::str::FromStr;
 
+use crate::util::Redacted;
+
 /// Protocol type for the identity provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -61,13 +63,13 @@ pub struct ProviderConfig {
     pub name: String,
     pub protocol: Protocol,
     pub client_id: String,
-    pub client_secret: Option<String>,
+    pub client_secret: Option<Redacted<String>>,
     /// Only honoured for providers defined in the plugin params; resolved
     /// into `client_secret` at plugin init.
     pub client_secret_file: Option<String>,
     /// Encrypts this provider's cookies instead of the global
     /// `cookie_secret_1`/`cookie_secret_2`.
-    pub cookie_secret: Option<String>,
+    pub cookie_secret: Option<Redacted<String>>,
     /// Resolved into `cookie_secret` at plugin init, like `client_secret_file`.
     pub cookie_secret_file: Option<String>,
     pub discovery_url: Option<String>,
@@ -199,9 +201,9 @@ impl ProviderConfig {
             name: name.to_owned(),
             protocol,
             client_id,
-            client_secret,
+            client_secret: client_secret.map(Redacted),
             client_secret_file,
-            cookie_secret,
+            cookie_secret: cookie_secret.map(Redacted),
             cookie_secret_file,
             discovery_url: str_field("discovery_url"),
             auth_url: str_field("auth_url"),
@@ -223,10 +225,10 @@ impl ProviderConfig {
     pub fn load_secret_files(&mut self) -> Result<(), String> {
         let name = &self.name;
         if let Some(ref path) = self.client_secret_file {
-            self.client_secret = Some(
+            self.client_secret = Some(Redacted(
                 crate::config::read_secret_file(path)
                     .map_err(|e| format!("provider '{name}': {e}"))?,
-            );
+            ));
         }
         if let Some(ref path) = self.cookie_secret_file {
             let secret = crate::config::read_secret_file(path)
@@ -236,7 +238,7 @@ impl ProviderConfig {
                     "provider '{name}': cookie_secret must be at least 16 characters"
                 ));
             }
-            self.cookie_secret = Some(secret);
+            self.cookie_secret = Some(Redacted(secret));
         }
         Ok(())
     }
@@ -400,7 +402,8 @@ mod tests {
         std::fs::write(&cookie, "cookie-secret-16-chars").unwrap();
         p.load_secret_files().unwrap();
         assert!(p.secrets_loaded());
-        assert_eq!(p.client_secret.as_deref(), Some("s3cret"));
+        assert_eq!(p.client_secret, Some(Redacted("s3cret".to_owned())));
+        assert_eq!(format!("{:?}", p.client_secret), "Some(<redacted>)");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

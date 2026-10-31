@@ -248,7 +248,7 @@ fn build_client(
     let client_secret = provider
         .client_secret
         .as_ref()
-        .map(|s| ClientSecret::new(s.clone()));
+        .map(|s| ClientSecret::new(s.0.clone()));
     Ok(
         CoreClient::from_provider_metadata(metadata, client_id, client_secret)
             .set_redirect_uri(redirect_uri),

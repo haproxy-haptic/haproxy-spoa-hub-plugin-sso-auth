@@ -2,13 +2,14 @@ use haproxy_spoa_hub_plugin_api::{ConfigValue, PluginContext};
 use std::collections::HashMap;
 
 use crate::provider::ProviderConfig;
+use crate::util::Redacted;
 
 /// Global plugin configuration from `[plugins.params]`.
 #[derive(Debug, Clone)]
 pub struct PluginConfig {
     /// Optional when every provider has its own `cookie_secret`.
-    pub cookie_secret_1: Option<Vec<u8>>,
-    pub cookie_secret_2: Option<Vec<u8>>,
+    pub cookie_secret_1: Option<Redacted<Vec<u8>>>,
+    pub cookie_secret_2: Option<Redacted<Vec<u8>>>,
     pub current_cookie_secret: u8,
     pub cookie_domain: String,
     pub cookie_secure: bool,
@@ -85,8 +86,8 @@ impl PluginConfig {
         }
 
         let config = Self {
-            cookie_secret_1: cookie_secret_1.map(String::into_bytes),
-            cookie_secret_2: cookie_secret_2.map(String::into_bytes),
+            cookie_secret_1: cookie_secret_1.map(|s| Redacted(s.into_bytes())),
+            cookie_secret_2: cookie_secret_2.map(|s| Redacted(s.into_bytes())),
             current_cookie_secret: u8::try_from(current_cookie_secret)
                 .map_err(|e| format!("current_cookie_secret: {e}"))?,
             cookie_domain,
@@ -138,12 +139,12 @@ impl PluginConfig {
     /// The secret that encrypts new cookies for `provider`.
     pub fn active_secret<'a>(&'a self, provider: &'a ProviderConfig) -> &'a [u8] {
         if let Some(ref own) = provider.cookie_secret {
-            return own.as_bytes();
+            return own.0.as_bytes();
         }
         let global = if self.current_cookie_secret == 2 {
-            self.cookie_secret_2.as_deref()
+            self.cookie_secret_2.as_ref().map(|s| s.0.as_slice())
         } else {
-            self.cookie_secret_1.as_deref()
+            self.cookie_secret_1.as_ref().map(|s| s.0.as_slice())
         };
         global.expect("check_keys passed for this provider")
     }
@@ -155,9 +156,9 @@ impl PluginConfig {
             return None;
         }
         if self.current_cookie_secret == 2 {
-            self.cookie_secret_1.as_deref()
+            self.cookie_secret_1.as_ref().map(|s| s.0.as_slice())
         } else {
-            self.cookie_secret_2.as_deref()
+            self.cookie_secret_2.as_ref().map(|s| s.0.as_slice())
         }
     }
 
@@ -236,8 +237,8 @@ fn to_json(value: &ConfigValue) -> serde_json::Value {
 #[cfg(test)]
 pub fn test_config() -> PluginConfig {
     PluginConfig {
-        cookie_secret_1: Some(b"test-secret-one-at-least-16-chars".to_vec()),
-        cookie_secret_2: Some(b"test-secret-two-at-least-16-chars".to_vec()),
+        cookie_secret_1: Some(Redacted(b"test-secret-one-at-least-16-chars".to_vec())),
+        cookie_secret_2: Some(Redacted(b"test-secret-two-at-least-16-chars".to_vec())),
         current_cookie_secret: 1,
         cookie_domain: "example.com".into(),
         cookie_secure: true,
