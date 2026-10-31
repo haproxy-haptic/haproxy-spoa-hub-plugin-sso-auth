@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
 ### Added
 
 - Providers can be defined in the params as `[providers.<name>]`; a request naming one needs no `provider_config` arg. `client_secret_file`, `cookie_secret_file`, `cookie_secret_1_file` and `cookie_secret_2_file` read secrets from files at init.
