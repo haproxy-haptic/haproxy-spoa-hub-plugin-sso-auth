@@ -13,8 +13,9 @@ messages = ["check-sso-auth"]
 timeout_ms = 10000
 
 [plugins.params]
-cookie_secret_1 = "your-secret-at-least-16-chars"
-cookie_domain = "example.com"
+# Global cookie secret; optional when every provider sets cookie_secret(_file).
+cookie_secret_1_file = "/run/secrets/sso/cookie-secret"
+# cookie_domain = "example.com"   # default: host-only cookies
 # cookie_secret_2 = "rotation-secret-at-least-16-chars"
 # current_cookie_secret = 1
 # cookie_lifetime_secs = 36000
@@ -24,3 +25,15 @@ cookie_domain = "example.com"
 # clock_skew_secs = 60
 # discovery_ttl_secs = 3600
 # jwks_ttl_secs = 3600
+
+[plugins.params.providers.mykeycloak]
+protocol = "oidc"
+client_id = "haproxy-app"
+client_secret_file = "/run/secrets/sso/client-secret"
+discovery_url = "https://keycloak.example.com/realms/main/.well-known/openid-configuration"
+# A path is completed with the request's host (request_host arg).
+redirect_uri = "/app/oauth2/callback"
+scopes = ["openid", "email", "profile"]
+extract_claims = ["email", "name"]
+groups_claim = "groups"
+pass_token = "id_token"

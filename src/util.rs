@@ -17,6 +17,17 @@ pub fn get_nonempty_string<'a>(message: &'a SpoeMessage, key: &str) -> Option<&'
     message.get_string(key).filter(|s| !s.is_empty())
 }
 
+/// A secret whose `Debug` output never shows the value, so a config struct
+/// can derive `Debug` without leaking it into logs.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Redacted<T>(pub T);
+
+impl<T> std::fmt::Debug for Redacted<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 /// Cookie name constants.
 pub const SESSION_COOKIE_NAME: &str = "sso_session";
 pub const AUTH_STATE_COOKIE_NAME: &str = "sso_auth_state";

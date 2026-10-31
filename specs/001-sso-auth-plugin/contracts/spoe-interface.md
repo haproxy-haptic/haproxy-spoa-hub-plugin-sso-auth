@@ -12,10 +12,21 @@
 | Arg Name | Type | Description |
 |----------|------|-------------|
 | `provider` | String | Provider name (cache key, used for LRU caching and metrics) |
-| `provider_config` | String | JSON string with all provider settings (from a single HAProxy map file) |
+| `provider_config` | String | JSON string with all provider settings (from a single HAProxy map file). Not needed when `provider` names a `[providers.<name>]` table in the plugin params |
 
 The `provider_config` JSON contains all provider-specific fields.
-See "Provider Config JSON Fields" below for the full schema.
+See "Provider Config JSON Fields" below for the full schema. A
+`[providers.<name>]` params table takes the same fields (lists may be TOML
+arrays) plus `client_secret_file` and `cookie_secret_file`, which name files
+read at plugin init.
+
+**All protocols (optional):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cookie_secret` | String | Encrypts this provider's cookies instead of the global `cookie_secret_1` (min 16 chars) |
+| `groups_claim` | String | Claim holding the user's groups, checked against `allowed_groups` (default `groups`, always extracted) |
+| `pass_token` | String | OIDC only: `id_token` or `access_token`. The session keeps that token, returns it as `token` and refreshes it before it expires |
 
 ### Provider Config JSON Fields
 
@@ -57,8 +68,11 @@ See "Provider Config JSON Fields" below for the full schema.
 |----------|------|----------|-------------|
 | `extract_claims` | String | No | Comma-separated claim names |
 | `timeout_ms` | String | No | Per-provider timeout override |
-| `cookie` | String | No | Current session cookie value |
-| `request_path` | String | No | Original request path |
+| `cookie` | String | No | Current session cookie value (chunk 0, `req.cook(sso_session)`) |
+| `cookie_1`, `cookie_2` | String | No | Further session chunks, `req.cook(sso_session_1)` and `req.cook(sso_session_2)` |
+| `request_host` | String | No | Host header; required when `redirect_uri` is a path, which the plugin completes to `https://<request_host><path>` |
+| `allowed_groups` | String | No | Comma-separated groups; a signed-in user in none of them gets `action=forbidden` |
+| `request_path` | String | No | Path and query of the request (`pathq`). The OIDC callback is only recognised on the `redirect_uri` path, and after sign-in the browser returns here |
 | `request_method` | String | No | Original request method |
 | `callback_code` | String | No | Authorization code (OIDC callback) |
 | `callback_state` | String | No | State parameter (OIDC callback) |
@@ -77,7 +91,7 @@ as `txn.spoe.sso_auth.*`.
 | Variable | Type | Description |
 |----------|------|-------------|
 | `allowed` | Bool | Auth decision (true=allow, false=deny/redirect) |
-| `action` | String | "allow", "redirect", or "deny" |
+| `action` | String | "allow", "redirect", "forbidden" (403: lacks a required group), or "deny" |
 
 ### Conditionally Set
 
@@ -90,6 +104,9 @@ as `txn.spoe.sso_auth.*`.
 | `status_code` | Uint32 | Error | Suggested HTTP status code |
 | `set_auth_state_cookie` | String | action=redirect (OIDC/SAML) | Encrypted auth state cookie value (raw). Use with custom `Set-Cookie` header for full control. |
 | `set_cookie_header` | String | Successful auth/refresh | Complete `Set-Cookie` header for session cookie (includes Domain, Path, Secure, HttpOnly, SameSite, Max-Age from plugin config). Use for simplified setup. |
+| `set_cookie_header_1`, `set_cookie_header_2` | String | Session longer than one chunk, or a stale chunk to clear | `Set-Cookie` headers for chunks 1 and 2. Add every `set_cookie_header*` with `http-after-response add-header`, which also covers redirects HAProxy generates |
+| `token` | String | Allow, provider has `pass_token` | The ID or access token, for `Authorization: Bearer` |
+| `pass_token` | Bool | Provider has `pass_token` | Set on every verdict so HAProxy can drop a client-supplied `Authorization` header |
 | `set_auth_state_header` | String | action=redirect | Complete `Set-Cookie` header for auth state cookie (10 min TTL). Use for simplified setup. |
 | `clear_cookie_header` | String | Logout | Complete `Set-Cookie` header that clears the session cookie (Max-Age=0). Use for simplified setup. |
 | `<claim_name>` | String | Authenticated + claim exists | Extracted claim value |

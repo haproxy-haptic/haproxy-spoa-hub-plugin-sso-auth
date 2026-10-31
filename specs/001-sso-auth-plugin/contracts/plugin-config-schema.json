@@ -3,17 +3,54 @@
   "title": "SSO Auth Plugin Configuration",
   "description": "Global settings for the sso_auth plugin (hub TOML [plugins.params])",
   "type": "object",
-  "required": ["cookie_secret_1", "cookie_domain"],
   "properties": {
     "cookie_secret_1": {
       "type": "string",
       "minLength": 16,
-      "description": "Primary cookie encryption secret (min 16 chars)"
+      "description": "Primary cookie encryption secret (min 16 chars). Optional when every provider sets its own cookie_secret"
+    },
+    "cookie_secret_1_file": {
+      "type": "string",
+      "description": "File holding cookie_secret_1"
     },
     "cookie_secret_2": {
       "type": "string",
       "minLength": 16,
       "description": "Secondary cookie encryption secret for rotation"
+    },
+    "cookie_secret_2_file": {
+      "type": "string",
+      "description": "File holding cookie_secret_2"
+    },
+    "providers": {
+      "type": "object",
+      "description": "Providers by name; a request naming one needs no provider_config arg",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["protocol", "client_id", "redirect_uri"],
+        "properties": {
+          "protocol": { "type": "string", "enum": ["oidc", "saml"] },
+          "client_id": { "type": "string" },
+          "client_secret": { "type": "string" },
+          "client_secret_file": { "type": "string" },
+          "cookie_secret": { "type": "string", "minLength": 16 },
+          "cookie_secret_file": { "type": "string" },
+          "discovery_url": { "type": "string" },
+          "auth_url": { "type": "string" },
+          "token_url": { "type": "string" },
+          "jwks_url": { "type": "string" },
+          "logout_url": { "type": "string" },
+          "redirect_uri": { "type": "string" },
+          "post_logout_redirect_uri": { "type": "string" },
+          "scopes": { "type": ["string", "array"], "items": { "type": "string" } },
+          "extract_claims": { "type": ["string", "array"], "items": { "type": "string" } },
+          "groups_claim": { "type": "string" },
+          "pass_token": { "type": "string", "enum": ["id_token", "access_token"] },
+          "idp_cert": { "type": "string" },
+          "timeout_ms": { "type": ["integer", "string"] }
+        },
+        "additionalProperties": false
+      }
     },
     "current_cookie_secret": {
       "type": "integer",
@@ -23,7 +60,8 @@
     },
     "cookie_domain": {
       "type": "string",
-      "description": "Cookie Domain attribute"
+      "default": "",
+      "description": "Cookie Domain attribute; empty sets host-only cookies"
     },
     "cookie_secure": {
       "type": "boolean",
