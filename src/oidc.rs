@@ -88,6 +88,17 @@ pub fn handle_oidc_request(
         }
     }
 
+    // A configuration error, unlike an IdP outage, never fails open.
+    let redirect_uri = match redirect_url(provider, req.host) {
+        Ok(u) => u,
+        Err(error) => {
+            return AuthAction::Error {
+                error,
+                allow: false,
+            };
+        }
+    };
+
     // Check circuit breaker.
     if let Some(cached) = cache.get(&provider.name) {
         if cached.is_circuit_open(5, 30) {
@@ -101,7 +112,7 @@ pub fn handle_oidc_request(
     }
 
     let http_client = oidc_http_client(provider, config);
-    let client = match build_client(provider, cache, config, &http_client, req.host) {
+    let client = match build_client(provider, cache, config, &http_client, redirect_uri) {
         Ok(c) => c,
         Err(e) => {
             metrics.inc_idp_error(&provider.name);
@@ -220,12 +231,17 @@ fn safe_return_path(original: Option<&str>) -> String {
     }
 }
 
+fn redirect_url(provider: &ProviderConfig, host: Option<&str>) -> Result<RedirectUrl, String> {
+    RedirectUrl::new(provider.redirect_uri_for(host)?)
+        .map_err(|e| format!("invalid redirect_uri: {e}"))
+}
+
 fn build_client(
     provider: &ProviderConfig,
     cache: &ProviderCache,
     config: &PluginConfig,
     http_client: &openidconnect::ureq::Agent,
-    host: Option<&str>,
+    redirect_uri: RedirectUrl,
 ) -> Result<OidcClient, String> {
     let metadata = resolve_metadata(provider, cache, config, http_client)?;
     let client_id = ClientId::new(provider.client_id.clone());
@@ -233,8 +249,6 @@ fn build_client(
         .client_secret
         .as_ref()
         .map(|s| ClientSecret::new(s.clone()));
-    let redirect_uri = RedirectUrl::new(provider.redirect_uri_for(host)?)
-        .map_err(|e| format!("invalid redirect_uri: {e}"))?;
     Ok(
         CoreClient::from_provider_metadata(metadata, client_id, client_secret)
             .set_redirect_uri(redirect_uri),
@@ -377,7 +391,13 @@ fn refresh_session(
     host: Option<&str>,
 ) -> Result<(SsoSession, String), String> {
     let http_client = oidc_http_client(provider, config);
-    let client = build_client(provider, cache, config, &http_client, host)?;
+    let client = build_client(
+        provider,
+        cache,
+        config,
+        &http_client,
+        redirect_url(provider, host)?,
+    )?;
 
     let refresh_token = RefreshToken::new(refresh_token_str.to_owned());
     let token_response = client
@@ -651,6 +671,22 @@ pub fn apply_failure_policy(config: &PluginConfig, provider_name: &str, error: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redirect_uri_error_denies_even_with_fail_open() {
+        let mut config = crate::config::test_config();
+        config.fail_open = true;
+        let mut provider = crate::provider::test_provider();
+        provider.redirect_uri = "/oauth2/callback".into();
+        let action = handle_oidc_request(
+            &provider,
+            &ProviderCache::new(4),
+            &config,
+            &AuthMetrics::new(),
+            &OidcRequest::default(),
+        );
+        assert!(matches!(action, AuthAction::Error { allow: false, .. }));
+    }
 
     #[test]
     fn jwt_payload_reads_custom_claims() {

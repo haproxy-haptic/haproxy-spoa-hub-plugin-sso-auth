@@ -142,6 +142,16 @@ impl ProviderConfig {
 
         let protocol: Protocol = require("protocol")?.parse()?;
         let client_id = require("client_id")?;
+        if protocol == Protocol::Oidc
+            && str_field("discovery_url").is_none()
+            && ["auth_url", "token_url", "jwks_url"]
+                .iter()
+                .any(|f| str_field(f).is_none())
+        {
+            return Err(format!(
+                "provider '{name}' needs discovery_url, or auth_url, token_url and jwks_url"
+            ));
+        }
         let redirect_uri = require("redirect_uri")?;
 
         let scopes = list_field("scopes").unwrap_or_else(|| vec!["openid".to_owned()]);
@@ -274,6 +284,7 @@ pub fn test_provider() -> ProviderConfig {
         &serde_json::json!({
             "protocol": "oidc",
             "client_id": "app",
+            "discovery_url": "https://idp.example.com/.well-known/openid-configuration",
             "redirect_uri": "https://app.example.com/oauth2/callback",
         }),
     )
@@ -288,6 +299,7 @@ mod tests {
         serde_json::json!({
             "protocol": "oidc",
             "client_id": "app",
+            "discovery_url": "https://idp.example.com/.well-known/openid-configuration",
             "redirect_uri": "https://app.example.com/oauth2/callback?x=1",
         })
     }
@@ -315,6 +327,17 @@ mod tests {
         assert_eq!(p.extract_claims, vec!["email", "roles"]);
         assert_eq!(p.pass_token, Some(PassToken::AccessToken));
         assert_eq!(p.timeout_ms, Some(2500));
+    }
+
+    #[test]
+    fn oidc_needs_discovery_or_all_manual_endpoints() {
+        let mut v = base();
+        v.as_object_mut().unwrap().remove("discovery_url");
+        v["auth_url"] = serde_json::json!("https://idp/auth");
+        assert!(ProviderConfig::from_value("kc", &v).is_err());
+        v["token_url"] = serde_json::json!("https://idp/token");
+        v["jwks_url"] = serde_json::json!("https://idp/jwks");
+        assert!(ProviderConfig::from_value("kc", &v).is_ok());
     }
 
     #[test]
