@@ -50,7 +50,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
 
-ADD https://github.com/haproxy-haptic/haproxy-spoa-hub.git#087ee5df5f71ee85154331eb9cce26400c40c74c /pgo
+ADD https://github.com/haproxy-haptic/haproxy-spoa-hub.git#08a4e17bcf88ae3530b38f55ca09e68609a1e451 /pgo
 COPY ci/pgo ci/pgo
 RUN rustup component add llvm-tools-preview
 RUN /pgo/scripts/pgo/build.sh armv7-unknown-linux-gnueabihf
