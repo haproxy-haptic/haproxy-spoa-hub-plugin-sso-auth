@@ -13,7 +13,7 @@ RUN dpkg --add-architecture armhf && \
     apt-get install -y --no-install-recommends --allow-downgrades \
         "linux-libc-dev=${KERNEL_HEADERS}" \
         "linux-libc-dev:armhf=${KERNEL_HEADERS}" \
-        gcc-arm-linux-gnueabihf \
+        qemu-user gcc-arm-linux-gnueabihf \
         libxml2-dev:armhf \
         libxmlsec1-dev:armhf \
         libxmlsec1-openssl:armhf \
@@ -50,7 +50,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
 
-RUN cargo auditable build --target armv7-unknown-linux-gnueabihf --release
+ADD https://github.com/haproxy-haptic/haproxy-spoa-hub.git#087ee5df5f71ee85154331eb9cce26400c40c74c /pgo
+COPY ci/pgo ci/pgo
+RUN rustup component add llvm-tools-preview
+RUN /pgo/scripts/pgo/build.sh armv7-unknown-linux-gnueabihf
 
 FROM scratch
 COPY --from=0 /build/target/armv7-unknown-linux-gnueabihf/release/libhaproxy_spoa_hub_plugin_sso_auth.so /

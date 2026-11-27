@@ -1,0 +1,14 @@
+[
+  {
+    "message": "check-sso-auth",
+    "args": {
+      "provider": "local",
+      "request_path": "/catalog",
+      "request_host": "shop.example"
+    },
+    "expect": {
+      "sso_auth.action": "redirect"
+    },
+    "requires_http": true
+  }
+]

@@ -1,0 +1,14 @@
+[[plugins]]
+name = "sso_auth"
+library = "libhaproxy_spoa_hub_plugin_sso_auth.so"
+messages = ["check-sso-auth"]
+[plugins.params]
+cookie_secret_1 = "local-training-cookie-secret"
+[plugins.params.providers.local]
+protocol = "oidc"
+client_id = "training-app"
+client_secret = "training-secret"
+redirect_uri = "https://shop.example/callback"
+auth_url = "http://$upstream/auth"
+token_url = "http://$upstream/token"
+jwks_url = "http://$upstream/jwks"
