@@ -48,7 +48,12 @@ COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
 COPY --from=fetcher /build/vendor vendor/
 COPY --from=fetcher /build/.cargo .cargo/
 
-RUN cargo auditable build --release
+ADD https://github.com/haproxy-haptic/haproxy-spoa-hub.git#bba085a146a6d494046d7c666ecef0197d0139a9 /pgo
+COPY ci/pgo ci/pgo
+RUN rustup component add llvm-tools-preview
+RUN target=$(rustc -vV | sed -n 's/^host: //p') && \
+    /pgo/scripts/pgo/build.sh "$target" && \
+    cp "target/$target/release/libhaproxy_spoa_hub_plugin_sso_auth.so" /plugin.so
 
 FROM scratch
-COPY --from=builder /build/target/release/libhaproxy_spoa_hub_plugin_sso_auth.so /
+COPY --from=builder /plugin.so /libhaproxy_spoa_hub_plugin_sso_auth.so
