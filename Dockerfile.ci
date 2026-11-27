@@ -48,7 +48,7 @@ COPY specs/001-sso-auth-plugin/contracts/ specs/001-sso-auth-plugin/contracts/
 COPY --from=fetcher /build/vendor vendor/
 COPY --from=fetcher /build/.cargo .cargo/
 
-ADD https://github.com/haproxy-haptic/haproxy-spoa-hub.git#08a4e17bcf88ae3530b38f55ca09e68609a1e451 /pgo
+ADD https://github.com/haproxy-haptic/haproxy-spoa-hub.git#bba085a146a6d494046d7c666ecef0197d0139a9 /pgo
 COPY ci/pgo ci/pgo
 RUN rustup component add llvm-tools-preview
 RUN target=$(rustc -vV | sed -n 's/^host: //p') && \
